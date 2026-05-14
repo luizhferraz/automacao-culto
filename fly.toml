@@ -1,0 +1,22 @@
+app = "culto-automacao"
+primary_region = "iad"
+
+[build]
+
+[env]
+  TZ = "America/Sao_Paulo"
+  AUTH_DIR = "/data/baileys_auth"
+
+[mounts]
+  source = "culto_data"
+  destination = "/data"
+
+[[services]]
+  internal_port = 3000
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 3000
+
+[[restart]]
+  policy = "never"
