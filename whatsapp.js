@@ -18,6 +18,7 @@ async function iniciarCliente() {
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
     browser: ['Culto Bot', 'Chrome', '1.0'],
+    generateHighQualityLinkPreview: true,
   });
 
   sock.ev.on('creds.update', saveCreds);

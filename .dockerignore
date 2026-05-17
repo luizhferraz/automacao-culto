@@ -1,0 +1,7 @@
+node_modules/
+.baileys_auth/
+.env
+*.png
+*.jpg
+.DS_Store
+.git/

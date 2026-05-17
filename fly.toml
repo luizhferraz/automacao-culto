@@ -11,12 +11,5 @@ primary_region = "iad"
   source = "culto_data"
   destination = "/data"
 
-[[services]]
-  internal_port = 3000
-  protocol = "tcp"
-
-  [[services.ports]]
-    port = 3000
-
 [[restart]]
   policy = "never"
