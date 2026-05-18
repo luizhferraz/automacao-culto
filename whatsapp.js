@@ -19,6 +19,8 @@ async function iniciarCliente() {
     printQRInTerminal: false,
     browser: ['Culto Bot', 'Chrome', '1.0'],
     generateHighQualityLinkPreview: true,
+    markOnlineOnConnect: false,  // não marca como online — evita suprimir notificações do celular
+    syncFullHistory: false,       // não sincroniza histórico — reduz interferência
   });
 
   sock.ev.on('creds.update', saveCreds);
