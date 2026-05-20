@@ -47,6 +47,13 @@ async function iniciarCliente() {
         console.log('✅ WhatsApp conectado com sucesso!');
         pronto = true;
         tentativas = 0;
+        // Anuncia presença como indisponível para não suprimir notificações do celular
+        try {
+          await sock.sendPresenceUpdate('unavailable');
+          console.log('📵 Presença definida como indisponível (notificações do celular preservadas)');
+        } catch (e) {
+          // ignora erro silenciosamente
+        }
         resolve(sock);
       }
 
