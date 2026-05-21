@@ -110,20 +110,23 @@ async function enviarMensagem(chatId, mensagem) {
 
     sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
       if (connection === 'open') {
-        try {
-          await sock.sendMessage(chatId, { text: mensagem });
-          console.log(`✅ Mensagem enviada para ${chatId}`);
-          clearTimeout(timeout);
-          // Desconecta logo após enviar
-          setTimeout(() => {
+        // Aguarda 3s para o WhatsApp processar a conexão e gerar prévia do link
+        setTimeout(async () => {
+          try {
+            await sock.sendMessage(chatId, { text: mensagem });
+            console.log(`✅ Mensagem enviada para ${chatId}`);
+            clearTimeout(timeout);
+            // Desconecta após enviar
+            setTimeout(() => {
+              sock.end(undefined);
+              resolve();
+            }, 3000);
+          } catch (err) {
+            clearTimeout(timeout);
             sock.end(undefined);
-            resolve();
-          }, 2000);
-        } catch (err) {
-          clearTimeout(timeout);
-          sock.end(undefined);
-          reject(err);
-        }
+            reject(err);
+          }
+        }, 3000);
       }
 
       if (connection === 'close') {
