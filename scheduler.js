@@ -3,7 +3,7 @@ const { buscarTransmissaoAoVivo, buscarUltimaGravacao } = require('./youtube');
 const { enviarMensagem, estaConectado } = require('./whatsapp');
 
 // Intervalo entre tentativas (minutos)
-const INTERVALO_MIN = 5;
+const INTERVALO_MIN = 1;
 
 let tentativasAtivas = {};
 
@@ -91,71 +91,67 @@ function iniciarAgendamentos(config) {
   const { apiKey, channelId, nomeGrupo } = config;
 
   // ── Domingo manhã ──────────────────────────────────────────────────────────
-  // Começa às 09h54, monitora até 10h30 → janela de 36 min → 8 tentativas
+  // Começa às 09h54, verifica a cada 1 min até 10h30 → janela de 36 min → 36 tentativas
   cron.schedule('54 9 * * 0', () => {
-    monitorarAoVivo('domingo-manha', 8, nomeGrupo, apiKey, channelId);
+    monitorarAoVivo('domingo-manha', 36, nomeGrupo, apiKey, channelId);
   }, { timezone: 'America/Sao_Paulo' });
 
   // ── Domingo noite ──────────────────────────────────────────────────────────
-  // Começa às 18h55, monitora até 19h30 → janela de 35 min → 8 tentativas
+  // Começa às 18h59, verifica a cada 1 min até 19h30 → janela de 31 min → 31 tentativas
   // (tenta ao vivo primeiro; se não achar, envia gravação na última tentativa)
-  cron.schedule('55 18 * * 0', async () => {
-    const encontrou = await new Promise(resolve => {
-      const chave = 'domingo-noite';
-      let tentativas = 0;
-      const maxT = 7;
+  cron.schedule('59 18 * * 0', async () => {
+    const chave = 'domingo-noite';
+    const maxT = 31;
 
-      if (tentativasAtivas[chave]) { resolve(false); return; }
-      tentativasAtivas[chave] = 0;
+    if (tentativasAtivas[chave]) {
+      console.log(`[Scheduler] Monitoramento ${chave} já está ativo, ignorando.`);
+      return;
+    }
+    tentativasAtivas[chave] = 0;
+    console.log(`\n[Scheduler] ▶ Iniciando monitoramento: ${chave} (máx ${maxT} tentativas)`);
 
-      console.log(`\n[Scheduler] ▶ Iniciando monitoramento: ${chave}`);
+    async function tentar() {
+      tentativasAtivas[chave]++;
+      const n = tentativasAtivas[chave];
 
-      async function tentar() {
-        tentativas++;
-        tentativasAtivas[chave] = tentativas;
-
-        if (estaConectado()) {
-          console.log(`[Scheduler] Tentativa ${tentativas}/${maxT} — buscando ao vivo...`);
-          try {
-            const video = await buscarTransmissaoAoVivo(apiKey, channelId);
-            if (video) {
-              await enviarMensagem(nomeGrupo, mensagemAoVivo(video.titulo, video.url));
-              console.log(`[Scheduler] ✅ Ao vivo enviado: ${video.url}`);
-              delete tentativasAtivas[chave];
-              resolve(true);
-              return;
-            }
-          } catch (err) {
-            console.error('[Scheduler] Erro:', err.message);
+      if (estaConectado()) {
+        console.log(`[Scheduler] Tentativa ${n}/${maxT} — buscando ao vivo...`);
+        try {
+          const video = await buscarTransmissaoAoVivo(apiKey, channelId);
+          if (video) {
+            await enviarMensagem(nomeGrupo, mensagemAoVivo(video.titulo, video.url));
+            console.log(`[Scheduler] ✅ Ao vivo enviado: ${video.url}`);
+            delete tentativasAtivas[chave];
+            return;
           }
+        } catch (err) {
+          console.error('[Scheduler] Erro:', err.message);
         }
-
-        if (tentativas >= maxT) {
-          // Última tentativa: envia gravação recente
-          console.log('[Scheduler] Ao vivo não encontrado, enviando gravação recente...');
-          delete tentativasAtivas[chave];
-          await enviarGravacao(nomeGrupo, apiKey, channelId);
-          resolve(false);
-          return;
-        }
-
-        setTimeout(tentar, INTERVALO_MIN * 60 * 1000);
       }
 
-      tentar();
-    });
+      if (n >= maxT) {
+        console.log('[Scheduler] Ao vivo não encontrado, enviando gravação recente...');
+        delete tentativasAtivas[chave];
+        await enviarGravacao(nomeGrupo, apiKey, channelId);
+        return;
+      }
+
+      setTimeout(tentar, INTERVALO_MIN * 60 * 1000);
+    }
+
+    tentar();
   }, { timezone: 'America/Sao_Paulo' });
 
   // ── Quarta-feira ───────────────────────────────────────────────────────────
-  // Começa às 19h55, monitora até 20h30 → janela de 35 min → 8 tentativas
-  cron.schedule('55 19 * * 3', () => {
-    monitorarAoVivo('quarta-noite', 8, nomeGrupo, apiKey, channelId);
+  // Começa às 19h54, verifica a cada 1 min até 20h30 → janela de 36 min → 36 tentativas
+  cron.schedule('54 19 * * 3', () => {
+    monitorarAoVivo('quarta-noite', 36, nomeGrupo, apiKey, channelId);
   }, { timezone: 'America/Sao_Paulo' });
 
   console.log('📅 Agendamentos configurados (America/Sao_Paulo):');
-  console.log('   • Domingo     09h54 → monitora ao vivo até 10h30');
-  console.log('   • Domingo     18h55 → monitora ao vivo até 19h30 (fallback: gravação)');
-  console.log('   • Quarta-feira 19h55 → monitora ao vivo até 20h30');
+  console.log('   • Domingo     09h54 → verifica a cada 1 min até 10h30');
+  console.log('   • Domingo     18h59 → verifica a cada 1 min até 19h30 (fallback: gravação)');
+  console.log('   • Quarta-feira 19h54 → verifica a cada 1 min até 20h30');
   console.log('   Títulos aceitos: "Culto da Família", "Culto de Fé" (e variações)');
 }
 

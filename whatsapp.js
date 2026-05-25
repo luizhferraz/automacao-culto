@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, getUrlInfo } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
@@ -98,7 +98,6 @@ async function enviarMensagem(chatId, mensagem) {
       browser: ['Culto Bot', 'Chrome', '1.0'],
       markOnlineOnConnect: false,
       syncFullHistory: false,
-      generateHighQualityLinkPreview: true,
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -110,10 +109,28 @@ async function enviarMensagem(chatId, mensagem) {
 
     sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
       if (connection === 'open') {
-        // Aguarda 3s para o WhatsApp processar a conexão e gerar prévia do link
+        // Aguarda 3s para o WhatsApp processar a conexão
         setTimeout(async () => {
           try {
-            await sock.sendMessage(chatId, { text: mensagem });
+            // Gera prévia do link explicitamente (não depende do Puppeteer)
+            let linkPreview;
+            const urlMatch = mensagem.match(/https?:\/\/[^\s]+/);
+            if (urlMatch) {
+              try {
+                linkPreview = await getUrlInfo(urlMatch[0], {
+                  thumbnailWidth: 300,
+                  fetchOpts: {
+                    timeout: 10000,
+                    headers: { 'User-Agent': 'WhatsApp/2.24.6.77 A' },
+                  },
+                });
+                console.log(`🔗 Prévia gerada: ${linkPreview?.title || 'sem título'}`);
+              } catch (previewErr) {
+                console.warn(`⚠️  Prévia não gerada: ${previewErr.message}`);
+              }
+            }
+
+            await sock.sendMessage(chatId, { text: mensagem, linkPreview: linkPreview || null });
             console.log(`✅ Mensagem enviada para ${chatId}`);
             clearTimeout(timeout);
             // Desconecta após enviar
