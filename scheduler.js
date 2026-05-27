@@ -152,7 +152,7 @@ function iniciarAgendamentos(config) {
   console.log('   • Domingo     09h54 → verifica a cada 1 min até 10h30');
   console.log('   • Domingo     18h59 → verifica a cada 1 min até 19h30 (fallback: gravação)');
   console.log('   • Quarta-feira 19h54 → verifica a cada 1 min até 20h30');
-  console.log('   Títulos aceitos: "Culto da Família", "Culto de Fé" (e variações)');
+  console.log('   Títulos aceitos: "Culto da Família", "Culto de Fé", "Especial de..." (e variações)');
 }
 
 module.exports = { iniciarAgendamentos };
