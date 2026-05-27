@@ -18,6 +18,7 @@ const PALAVRAS_CULTO = [
   'culto de fe',
   'culto familia',  // variação sem "da"
   'culto fe',       // variação sem "de"
+  'especial de',    // cultos especiais: "Especial de Páscoa", "Especial de Natal", etc.
 ];
 
 function ehCulto(titulo) {
