@@ -8,11 +8,11 @@ const INTERVALO_MIN = 1;
 let tentativasAtivas = {};
 
 function mensagemAoVivo(titulo, url) {
-  return `🔴 *Transmissão ao vivo agora!*\n${url}`;
+  return `🔴 *Transmissão ao vivo*\n\n*${titulo}*\n\n🖥️ Assista aqui:\n${url}`;
 }
 
 function mensagemGravacao(titulo, url) {
-  return `🎬 *Culto disponível para assistir:*\n${url}`;
+  return `🎬 *Culto disponível para assistir*\n\n*${titulo}*\n\n🖥️ Assista aqui:\n${url}`;
 }
 
 /**

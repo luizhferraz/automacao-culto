@@ -130,7 +130,9 @@ async function enviarMensagem(chatId, mensagem) {
               }
             }
 
-            await sock.sendMessage(chatId, { text: mensagem, linkPreview: linkPreview || null });
+            const payload = { text: mensagem };
+            if (linkPreview) payload.linkPreview = linkPreview;
+            await sock.sendMessage(chatId, payload);
             console.log(`✅ Mensagem enviada para ${chatId}`);
             clearTimeout(timeout);
             // Desconecta após enviar
