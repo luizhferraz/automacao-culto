@@ -27,33 +27,36 @@ function ehCulto(titulo) {
 }
 
 async function buscarTransmissaoAoVivo(apiKey, channelId) {
-  try {
-    const { data } = await axios.get(`${BASE_URL}/search`, {
-      params: {
-        part: 'snippet',
-        channelId,
-        type: 'video',
-        eventType: 'live',
-        maxResults: 10,
-        key: apiKey,
-      },
-    });
+  // Busca 'live' primeiro, depois 'upcoming' (estreias/premieres agendadas)
+  for (const eventType of ['live', 'upcoming']) {
+    try {
+      const { data } = await axios.get(`${BASE_URL}/search`, {
+        params: {
+          part: 'snippet',
+          channelId,
+          type: 'video',
+          eventType,
+          maxResults: 10,
+          key: apiKey,
+        },
+      });
 
-    const video = data.items?.find(item => ehCulto(item.snippet.title));
+      const video = data.items?.find(item => ehCulto(item.snippet.title));
 
-    if (video) {
-      return {
-        id: video.id.videoId,
-        titulo: video.snippet.title,
-        url: `https://www.youtube.com/watch?v=${video.id.videoId}`,
-      };
+      if (video) {
+        console.log(`[YouTube] Encontrado como '${eventType}': ${video.snippet.title}`);
+        return {
+          id: video.id.videoId,
+          titulo: video.snippet.title,
+          url: `https://www.youtube.com/watch?v=${video.id.videoId}`,
+        };
+      }
+    } catch (err) {
+      console.error(`[YouTube] Erro ao buscar ${eventType}:`, err.message);
     }
-
-    return null;
-  } catch (err) {
-    console.error('[YouTube] Erro ao buscar transmissão ao vivo:', err.message);
-    return null;
   }
+
+  return null;
 }
 
 async function buscarUltimaGravacao(apiKey, channelId) {
@@ -70,7 +73,13 @@ async function buscarUltimaGravacao(apiKey, channelId) {
       },
     });
 
-    const video = data.items?.find(item => ehCulto(item.snippet.title));
+    // Só considera vídeos publicados nas últimas 6 horas
+    // (evita enviar o culto da manhã como fallback do culto da noite)
+    const seisHorasAtras = new Date(Date.now() - 6 * 60 * 60 * 1000);
+    const video = data.items?.find(item =>
+      ehCulto(item.snippet.title) &&
+      new Date(item.snippet.publishedAt) > seisHorasAtras
+    );
 
     if (video) {
       return {
