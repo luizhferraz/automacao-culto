@@ -37,6 +37,33 @@ async function modoTesteYoutube() {
   }
 }
 
+// Agenda o desligamento automático após a última janela do dia
+function agendarDesligamento() {
+  const agora = new Date();
+  const dia = agora.getDay(); // 0 = domingo, 3 = quarta
+
+  // Domingo: última janela termina às 19h31 (18h59 + 31 min)
+  // Quarta:  última janela termina às 20h31 (19h54 + 36 min + 1 min de margem)
+  const horarios = { 0: { h: 19, m: 31 }, 3: { h: 20, m: 31 } };
+  const horario = horarios[dia];
+
+  if (!horario) return; // não é dia de culto, não agenda desligamento
+
+  const desligamento = new Date(agora);
+  desligamento.setHours(horario.h, horario.m, 0, 0);
+
+  const msAteDesligar = desligamento - agora;
+  if (msAteDesligar <= 0) return; // horário já passou
+
+  const minutos = Math.round(msAteDesligar / 60000);
+  console.log(`⏰ Desligamento automático em ${minutos} min (${horario.h}h${String(horario.m).padStart(2,'0')})`);
+
+  setTimeout(() => {
+    console.log('🛑 Missão cumprida! Encerrando até o próximo culto.');
+    process.exit(0);
+  }, msAteDesligar);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   console.log('🙏 Automação de Culto — Iniciando...\n');
@@ -73,6 +100,7 @@ async function main() {
   }
 
   iniciarAgendamentos(config);
+  agendarDesligamento();
   console.log('\n✅ Bot rodando! Aguardando os horários agendados...');
   console.log('   (Mantenha este terminal aberto)\n');
 }
