@@ -1,125 +1,179 @@
 # Automação de Culto — WhatsApp + YouTube
 
-Envia automaticamente os links das transmissões ao vivo para um grupo do WhatsApp.
-
-## Horários
-
-| Dia | Horário | Tipo |
-|-----|---------|------|
-| Quarta-feira | 20h | Transmissão ao vivo |
-| Domingo | 10h | Transmissão ao vivo |
-| Domingo | 19h | Gravação (Estreia) do culto da manhã |
-
-O bot começa a monitorar o YouTube **5 minutos antes** de cada horário e tenta a cada 5 minutos por até 1 hora, caso a live atrase.
+Envia automaticamente os links das transmissões ao vivo (e estreias) para um canal de Avisos no WhatsApp, nos horários agendados. Roda na nuvem via Fly.io — sem precisar deixar o computador ligado.
 
 ---
 
-## Configuração
+## Como funciona
 
-### 1. Instalar dependências
+O bot monitora o canal do YouTube a cada **1 minuto** a partir do horário configurado. Assim que encontra uma transmissão ao vivo ou estreia agendada com título reconhecido, envia o link para o grupo e para de monitorar.
+
+**Títulos reconhecidos:**
+- `Culto da Família` (e variações)
+- `Culto de Fé` (e variações)
+- `Especial de ...` (ex: Especial de Páscoa, Especial de Natal)
+
+**Horários monitorados:**
+
+| Dia | Início | Janela | Comportamento |
+|-----|--------|--------|---------------|
+| Domingo manhã | 9h54 | até 10h30 | Envia link ao vivo |
+| Domingo noite | 18h59 | até 19h30 | Envia link ao vivo; se não encontrar, envia a gravação mais recente (últimas 6h) |
+| Quarta-feira | 19h54 | até 20h30 | Envia link ao vivo |
+
+**Ciclo automático (Fly.io + GitHub Actions):**
+1. GitHub Actions liga a máquina 5 min antes de cada janela
+2. Bot monitora o YouTube a cada 1 minuto
+3. Ao encontrar a live → envia o link → encerra o monitoramento
+4. Ao fim da janela → a máquina se desliga automaticamente
+
+O bot fica **offline** fora dos horários de envio para não suprimir as notificações do celular.
+
+---
+
+## Configuração inicial
+
+### 1. Pré-requisitos
+
+- Conta no [Fly.io](https://fly.io) (free tier)
+- Conta no [GitHub](https://github.com)
+- [flyctl](https://fly.io/docs/hands-on/install-flyctl/) instalado
+- Node.js 20+
+
+### 2. Clonar e instalar
 
 ```bash
+git clone https://github.com/seu-usuario/culto-automation.git
 cd culto-automation
 npm install
 ```
 
-### 2. Obter a chave da API do YouTube
-
-1. Acesse [Google Cloud Console](https://console.cloud.google.com/)
-2. Crie um projeto (ou use um existente)
-3. Ative a **YouTube Data API v3**
-4. Em "Credenciais", crie uma **Chave de API**
-5. Copie a chave
-
-### 3. Obter o ID do canal do YouTube
-
-1. Acesse o canal da sua igreja no YouTube
-2. Clique em **Sobre** → **Compartilhar canal** → **Copiar ID do canal**
-3. O ID começa com `UC...`
-
-### 4. Configurar o .env
+### 3. Configurar o `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-Edite o arquivo `.env` com seus dados:
+Edite o `.env` com seus dados:
 
 ```
 YOUTUBE_API_KEY=AIzaSy...
 YOUTUBE_CHANNEL_ID=UCxxxxxx...
-WHATSAPP_GROUP_NAME=Nome Exato do Grupo
+WHATSAPP_GROUP_NAME=120363xxxxxxxxx@g.us
+TZ=America/Sao_Paulo
 ```
 
-> ⚠️ O nome do grupo deve ser **exatamente igual** ao que aparece no WhatsApp.
+> **Como obter o `YOUTUBE_API_KEY`:**
+> 1. Acesse o [Google Cloud Console](https://console.cloud.google.com/)
+> 2. Crie um projeto e ative a **YouTube Data API v3**
+> 3. Em "Credenciais", crie uma **Chave de API**
 
----
+> **Como obter o `YOUTUBE_CHANNEL_ID`:**
+> Acesse o canal no YouTube → Sobre → Compartilhar canal → Copiar ID do canal (começa com `UC...`)
 
-## Como usar
+> **Como obter o `WHATSAPP_GROUP_NAME` (JID do grupo):**
+> Após parear o WhatsApp (passo 5), rode:
+> ```bash
+> node index.js --listar-grupos
+> ```
+> Copie o ID no formato `120363xxxxxxxxx@g.us` do grupo correto.
 
-### Iniciar o bot
+### 4. Deploy no Fly.io
 
 ```bash
-npm start
+fly auth login
+fly launch --name culto-automacao --no-deploy
+fly volumes create culto_data --size 1 --region iad
+fly secrets set YOUTUBE_API_KEY=... YOUTUBE_CHANNEL_ID=... WHATSAPP_GROUP_NAME=...
+fly deploy
 ```
 
-Na primeira vez, um **QR Code** aparecerá no terminal. Escaneie com o WhatsApp:
+### 5. Parear o WhatsApp via QR Code
+
+```bash
+fly logs --app culto-automacao
+```
+
+Um QR Code aparecerá nos logs. Escaneie com o WhatsApp:
 > WhatsApp → Menu (⋮) → Aparelhos conectados → Conectar aparelho
 
-Depois de escanear, a sessão fica salva e não precisa escanear de novo.
+Após parear, a sessão fica salva no volume `/data/baileys_auth`. Não precisa escanear novamente a menos que o WhatsApp seja resetado.
 
-### Testar se o YouTube está funcionando
+### 6. Configurar GitHub Actions (ligar a máquina automaticamente)
+
+1. Gere um token do Fly.io:
+   ```bash
+   fly tokens create deploy -a culto-automacao -n "github-actions"
+   ```
+2. No repositório GitHub, vá em **Settings → Secrets → Actions**
+3. Crie um secret chamado `FLY_API_TOKEN` com o token gerado
+
+O workflow `.github/workflows/start-bot.yml` já está configurado e vai ligar a máquina automaticamente nos horários certos.
+
+---
+
+## Comandos úteis
 
 ```bash
+# Ver logs em tempo real
+fly logs --app culto-automacao
+
+# Verificar status da máquina
+fly status --app culto-automacao
+
+# Ligar a máquina manualmente
+fly machine start 148ee339cee098 --app culto-automacao
+
+# Desligar a máquina manualmente
+fly machine stop 148ee339cee098 --app culto-automacao
+
+# Testar busca no YouTube
 node index.js --teste-youtube
-```
 
-### Testar o envio no WhatsApp
-
-```bash
+# Testar envio no WhatsApp
 node index.js --teste-envio
-```
 
-Isso envia uma mensagem de teste para o grupo configurado.
-
----
-
-## Manter rodando em segundo plano
-
-### Opção simples (macOS) — usando `pm2`
-
-```bash
-npm install -g pm2
-pm2 start index.js --name culto-bot
-pm2 save
-pm2 startup   # para iniciar automaticamente ao ligar o Mac
-```
-
-Para ver os logs:
-```bash
-pm2 logs culto-bot
+# Listar grupos/canais disponíveis
+node index.js --listar-grupos
 ```
 
 ---
 
-## Mensagens enviadas
+## Exemplo de mensagens enviadas
 
-**Transmissão ao vivo (quarta e domingo manhã):**
+**Transmissão ao vivo:**
 ```
 🔴 Transmissão ao vivo
 
-Culto da Família
+Culto da Família | 01/06 | 10h
 
-📺 Assista aqui:
+🖥️ Assista aqui:
 https://www.youtube.com/watch?v=...
 ```
 
-**Gravação do domingo à noite:**
+**Gravação (fallback domingo noite):**
 ```
-🎬 Culto de Domingo - Tarde
+🎬 Culto disponível para assistir
 
-Culto da Família - 11/05/2025
+Culto da Família | 01/06 | 10h
 
-📺 Assista a gravação completa:
+🖥️ Assista aqui:
 https://www.youtube.com/watch?v=...
+```
+
+---
+
+## Estrutura do projeto
+
+```
+culto-automation/
+├── index.js          # Ponto de entrada, inicialização e auto-shutdown
+├── scheduler.js      # Agendamentos cron e lógica de monitoramento
+├── youtube.js        # Busca de transmissões ao vivo via YouTube Data API
+├── whatsapp.js       # Envio de mensagens via Baileys (connect-on-demand)
+├── fly.toml          # Configuração do Fly.io
+├── Dockerfile        # Imagem Docker (Node 20 Alpine)
+└── .github/
+    └── workflows/
+        └── start-bot.yml  # GitHub Actions: liga a máquina antes dos cultos
 ```
