@@ -1,11 +1,7 @@
 name: Iniciar bot do culto
 
 on:
-  schedule:
-    - cron: '49 12 * * 0'  # Domingo 9h49 BRT  → janela da manhã (9h54)
-    - cron: '54 21 * * 0'  # Domingo 18h54 BRT → janela da noite (18h59)
-    - cron: '49 22 * * 3'  # Quarta  19h49 BRT → janela da noite (19h54)
-  workflow_dispatch:        # permite disparar manualmente se precisar
+  workflow_dispatch: # disparo manual de emergência (schedule movido para cron-job.org)
 
 jobs:
   start-machine:
