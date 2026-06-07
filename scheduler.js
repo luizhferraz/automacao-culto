@@ -15,55 +15,51 @@ function mensagemGravacao(titulo, url) {
   return `🎬 *Culto disponível para assistir*\n\n*${titulo}*\n\n🖥️ Assista aqui:\n${url}`;
 }
 
-/**
- * Monitora transmissão ao vivo a cada 5 min até encontrar ou esgotar o tempo.
- * @param {string} chave       - identificador único do agendamento
- * @param {number} maxTentativas - quantas vezes tentar (5 min cada)
- * @param {string} nomeGrupo
- * @param {string} apiKey
- * @param {string} channelId
- */
-async function monitorarAoVivo(chave, maxTentativas, nomeGrupo, apiKey, channelId) {
+// Retorna uma Promise que resolve quando o monitoramento terminar
+// (enviou o link OU esgotou todas as tentativas)
+function monitorarAoVivo(chave, maxTentativas, nomeGrupo, apiKey, channelId) {
   if (tentativasAtivas[chave]) {
     console.log(`[Scheduler] Monitoramento ${chave} já está ativo, ignorando.`);
-    return;
+    return Promise.resolve();
   }
   tentativasAtivas[chave] = 0;
   console.log(`\n[Scheduler] ▶ Iniciando monitoramento: ${chave} (máx ${maxTentativas} tentativas)`);
 
-  async function tentar() {
-    tentativasAtivas[chave]++;
-    const n = tentativasAtivas[chave];
+  return new Promise((resolve) => {
+    async function tentar() {
+      tentativasAtivas[chave]++;
+      const n = tentativasAtivas[chave];
 
-    if (!estaConectado()) {
-      console.warn('[Scheduler] WhatsApp não conectado, aguardando...');
-    } else {
-      console.log(`[Scheduler] Tentativa ${n}/${maxTentativas} — buscando ao vivo...`);
-      try {
-        const video = await buscarTransmissaoAoVivo(apiKey, channelId);
-        if (video) {
-          await enviarMensagem(nomeGrupo, mensagemAoVivo(video.titulo, video.url));
-          console.log(`[Scheduler] ✅ Link ao vivo enviado: ${video.url}`);
-          delete tentativasAtivas[chave];
-          return; // encerra o monitoramento
+      if (!estaConectado()) {
+        console.warn('[Scheduler] WhatsApp não conectado, aguardando...');
+      } else {
+        console.log(`[Scheduler] Tentativa ${n}/${maxTentativas} — buscando ao vivo...`);
+        try {
+          const video = await buscarTransmissaoAoVivo(apiKey, channelId);
+          if (video) {
+            await enviarMensagem(nomeGrupo, mensagemAoVivo(video.titulo, video.url));
+            console.log(`[Scheduler] ✅ Link ao vivo enviado: ${video.url}`);
+            delete tentativasAtivas[chave];
+            resolve();
+            return;
+          }
+        } catch (err) {
+          console.error('[Scheduler] Erro:', err.message);
         }
-      } catch (err) {
-        console.error('[Scheduler] Erro:', err.message);
       }
+
+      if (n >= maxTentativas) {
+        console.warn(`[Scheduler] ⚠️  Nenhuma transmissão encontrada em ${chave}. Encerrando.`);
+        delete tentativasAtivas[chave];
+        resolve();
+        return;
+      }
+
+      setTimeout(tentar, INTERVALO_MIN * 60 * 1000);
     }
 
-    if (n >= maxTentativas) {
-      console.warn(`[Scheduler] ⚠️  Nenhuma transmissão encontrada em ${chave}. Encerrando.`);
-      delete tentativasAtivas[chave];
-      return;
-    }
-
-    // Agenda próxima tentativa
-    setTimeout(tentar, INTERVALO_MIN * 60 * 1000);
-  }
-
-  // Primeira tentativa imediata
-  await tentar();
+    tentar();
+  });
 }
 
 async function enviarGravacao(nomeGrupo, apiKey, channelId) {
@@ -87,13 +83,19 @@ async function enviarGravacao(nomeGrupo, apiKey, channelId) {
   }
 }
 
+function desligar(motivo) {
+  console.log(`🛑 ${motivo} Encerrando processo — máquina será desligada pelo Fly.io.`);
+  setTimeout(() => process.exit(0), 3000); // 3s para logs fluírem
+}
+
 function iniciarAgendamentos(config) {
   const { apiKey, channelId, nomeGrupo } = config;
 
   // ── Domingo manhã ──────────────────────────────────────────────────────────
   // Começa às 09h54, verifica a cada 1 min até 10h30 → janela de 36 min → 36 tentativas
-  cron.schedule('54 9 * * 0', () => {
-    monitorarAoVivo('domingo-manha', 36, nomeGrupo, apiKey, channelId);
+  cron.schedule('54 9 * * 0', async () => {
+    await monitorarAoVivo('domingo-manha', 36, nomeGrupo, apiKey, channelId);
+    desligar('Janela da manhã encerrada.');
   }, { timezone: 'America/Sao_Paulo' });
 
   // ── Domingo noite ──────────────────────────────────────────────────────────
@@ -110,42 +112,49 @@ function iniciarAgendamentos(config) {
     tentativasAtivas[chave] = 0;
     console.log(`\n[Scheduler] ▶ Iniciando monitoramento: ${chave} (máx ${maxT} tentativas)`);
 
-    async function tentar() {
-      tentativasAtivas[chave]++;
-      const n = tentativasAtivas[chave];
+    await new Promise((resolve) => {
+      async function tentar() {
+        tentativasAtivas[chave]++;
+        const n = tentativasAtivas[chave];
 
-      if (estaConectado()) {
-        console.log(`[Scheduler] Tentativa ${n}/${maxT} — buscando ao vivo...`);
-        try {
-          const video = await buscarTransmissaoAoVivo(apiKey, channelId);
-          if (video) {
-            await enviarMensagem(nomeGrupo, mensagemAoVivo(video.titulo, video.url));
-            console.log(`[Scheduler] ✅ Ao vivo enviado: ${video.url}`);
-            delete tentativasAtivas[chave];
-            return;
+        if (estaConectado()) {
+          console.log(`[Scheduler] Tentativa ${n}/${maxT} — buscando ao vivo...`);
+          try {
+            const video = await buscarTransmissaoAoVivo(apiKey, channelId);
+            if (video) {
+              await enviarMensagem(nomeGrupo, mensagemAoVivo(video.titulo, video.url));
+              console.log(`[Scheduler] ✅ Ao vivo enviado: ${video.url}`);
+              delete tentativasAtivas[chave];
+              resolve();
+              return;
+            }
+          } catch (err) {
+            console.error('[Scheduler] Erro:', err.message);
           }
-        } catch (err) {
-          console.error('[Scheduler] Erro:', err.message);
         }
+
+        if (n >= maxT) {
+          console.log('[Scheduler] Ao vivo não encontrado, enviando gravação recente...');
+          delete tentativasAtivas[chave];
+          await enviarGravacao(nomeGrupo, apiKey, channelId);
+          resolve();
+          return;
+        }
+
+        setTimeout(tentar, INTERVALO_MIN * 60 * 1000);
       }
 
-      if (n >= maxT) {
-        console.log('[Scheduler] Ao vivo não encontrado, enviando gravação recente...');
-        delete tentativasAtivas[chave];
-        await enviarGravacao(nomeGrupo, apiKey, channelId);
-        return;
-      }
+      tentar();
+    });
 
-      setTimeout(tentar, INTERVALO_MIN * 60 * 1000);
-    }
-
-    tentar();
+    desligar('Janela da noite encerrada.');
   }, { timezone: 'America/Sao_Paulo' });
 
   // ── Quarta-feira ───────────────────────────────────────────────────────────
   // Começa às 19h54, verifica a cada 1 min até 20h30 → janela de 36 min → 36 tentativas
-  cron.schedule('54 19 * * 3', () => {
-    monitorarAoVivo('quarta-noite', 36, nomeGrupo, apiKey, channelId);
+  cron.schedule('54 19 * * 3', async () => {
+    await monitorarAoVivo('quarta-noite', 36, nomeGrupo, apiKey, channelId);
+    desligar('Janela da quarta encerrada.');
   }, { timezone: 'America/Sao_Paulo' });
 
   console.log('📅 Agendamentos configurados (America/Sao_Paulo):');
