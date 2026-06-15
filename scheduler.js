@@ -11,8 +11,17 @@ function mensagemAoVivo(titulo, url) {
   return `🔴 *Transmissão ao vivo*\n\n*${titulo}*\n\n🖥️ Assista aqui:\n${url}`;
 }
 
+function mensagemEstreia(titulo, url) {
+  return `🔵 *Culto disponível para assistir*\n\n*${titulo}*\n\n🖥️ Assista aqui:\n${url}`;
+}
+
 function mensagemGravacao(titulo, url) {
   return `🎬 *Culto disponível para assistir*\n\n*${titulo}*\n\n🖥️ Assista aqui:\n${url}`;
+}
+
+function mensagemParaVideo(video) {
+  if (video.fonte === 'estreia') return mensagemEstreia(video.titulo, video.url);
+  return mensagemAoVivo(video.titulo, video.url);
 }
 
 // Retorna uma Promise que resolve quando o monitoramento terminar
@@ -37,8 +46,8 @@ function monitorarAoVivo(chave, maxTentativas, nomeGrupo, apiKey, channelId) {
         try {
           const video = await buscarTransmissaoAoVivo(apiKey, channelId);
           if (video) {
-            await enviarMensagem(nomeGrupo, mensagemAoVivo(video.titulo, video.url));
-            console.log(`[Scheduler] ✅ Link ao vivo enviado: ${video.url}`);
+            await enviarMensagem(nomeGrupo, mensagemParaVideo(video));
+            console.log(`[Scheduler] ✅ Link enviado (${video.fonte}): ${video.url}`);
             delete tentativasAtivas[chave];
             resolve();
             return;
@@ -122,8 +131,8 @@ function iniciarAgendamentos(config) {
           try {
             const video = await buscarTransmissaoAoVivo(apiKey, channelId);
             if (video) {
-              await enviarMensagem(nomeGrupo, mensagemAoVivo(video.titulo, video.url));
-              console.log(`[Scheduler] ✅ Ao vivo enviado: ${video.url}`);
+              await enviarMensagem(nomeGrupo, mensagemParaVideo(video));
+              console.log(`[Scheduler] ✅ Link enviado (${video.fonte}): ${video.url}`);
               delete tentativasAtivas[chave];
               resolve();
               return;

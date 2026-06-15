@@ -50,6 +50,7 @@ async function buscarTransmissaoAoVivo(apiKey, channelId) {
           id: video.id.videoId,
           titulo: video.snippet.title,
           url: `https://www.youtube.com/watch?v=${video.id.videoId}`,
+          fonte: 'live',
         };
       }
     } catch (err) {
@@ -87,6 +88,7 @@ async function buscarTransmissaoAoVivo(apiKey, channelId) {
         id: videoId,
         titulo: item.snippet.title,
         url: `https://www.youtube.com/watch?v=${videoId}`,
+        fonte: 'estreia',
       };
     }
   } catch (err) {
