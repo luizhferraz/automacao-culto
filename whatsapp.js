@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, getUrlInfo } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
@@ -112,27 +112,7 @@ async function enviarMensagem(chatId, mensagem) {
         // Aguarda 3s para o WhatsApp processar a conexão
         setTimeout(async () => {
           try {
-            // Gera prévia do link explicitamente (não depende do Puppeteer)
-            let linkPreview;
-            const urlMatch = mensagem.match(/https?:\/\/[^\s]+/);
-            if (urlMatch) {
-              try {
-                linkPreview = await getUrlInfo(urlMatch[0], {
-                  thumbnailWidth: 300,
-                  fetchOpts: {
-                    timeout: 10000,
-                    headers: { 'User-Agent': 'WhatsApp/2.24.6.77 A' },
-                  },
-                });
-                console.log(`🔗 Prévia gerada: ${linkPreview?.title || 'sem título'}`);
-              } catch (previewErr) {
-                console.warn(`⚠️  Prévia não gerada: ${previewErr.message}`);
-              }
-            }
-
-            const payload = { text: mensagem };
-            if (linkPreview) payload.linkPreview = linkPreview;
-            await sock.sendMessage(chatId, payload);
+            await sock.sendMessage(chatId, { text: mensagem });
             console.log(`✅ Mensagem enviada para ${chatId}`);
             clearTimeout(timeout);
             // Desconecta após enviar
