@@ -91,7 +91,7 @@ async function buscarTransmissaoAoVivo(apiKey, channelId) {
           params: { part: 'snippet', id: videoId, key: apiKey },
         });
         const liveStatus = videoData.items?.[0]?.snippet?.liveBroadcastContent;
-        if (liveStatus === 'live' || liveStatus === 'upcoming') fonte = 'live';
+        if (liveStatus === 'live') fonte = 'live';
         console.log(`[YouTube] Playlist — "${item.snippet.title}" | liveBroadcastContent: ${liveStatus} → fonte: ${fonte}`);
       } catch (err) {
         console.warn('[YouTube] Não foi possível verificar status do vídeo:', err.message);
