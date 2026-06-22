@@ -26,7 +26,7 @@ function ehCulto(titulo) {
   return PALAVRAS_CULTO.some(p => norm.includes(p));
 }
 
-async function buscarTransmissaoAoVivo(apiKey, channelId) {
+async function buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras = 8) {
   // Método 1: live streams ativos
   // Método 2: transmissões agendadas (upcoming)
   for (const eventType of ['live', 'upcoming']) {
@@ -60,9 +60,8 @@ async function buscarTransmissaoAoVivo(apiKey, channelId) {
 
   // Método 3: playlist de uploads do canal
   // Estreias/Premieres NÃO aparecem nos filtros live/upcoming da API do YouTube.
-  // A playlist de uploads lista todos os vídeos recentes, incluindo Estreias.
-  // Filtra apenas vídeos adicionados nas últimas 8 horas para evitar
-  // retornar o culto da manhã durante a janela da noite.
+  // O filtro de horas é passado pelo scheduler: mais apertado à noite (4h)
+  // para não pegar o culto da manhã.
   try {
     const uploadPlaylistId = channelId.replace(/^UC/, 'UU');
     const { data } = await axios.get(`${BASE_URL}/playlistItems`, {
@@ -74,11 +73,12 @@ async function buscarTransmissaoAoVivo(apiKey, channelId) {
       },
     });
 
-    const oitoHorasAtras = new Date(Date.now() - 8 * 60 * 60 * 1000);
+    const limite = new Date(Date.now() - filtroHoras * 60 * 60 * 1000);
+    console.log(`[YouTube] Playlist — filtro: últimas ${filtroHoras}h (desde ${limite.toISOString()})`);
 
     const item = data.items?.find(i =>
       ehCulto(i.snippet.title) &&
-      new Date(i.snippet.publishedAt) > oitoHorasAtras
+      new Date(i.snippet.publishedAt) > limite
     );
 
     if (item) {

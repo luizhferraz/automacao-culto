@@ -26,7 +26,7 @@ function mensagemParaVideo(video) {
 
 // Retorna uma Promise que resolve quando o monitoramento terminar
 // (enviou o link OU esgotou todas as tentativas)
-function monitorarAoVivo(chave, maxTentativas, nomeGrupo, apiKey, channelId) {
+function monitorarAoVivo(chave, maxTentativas, nomeGrupo, apiKey, channelId, filtroHoras = 8) {
   if (tentativasAtivas[chave]) {
     console.log(`[Scheduler] Monitoramento ${chave} já está ativo, ignorando.`);
     return Promise.resolve();
@@ -44,7 +44,7 @@ function monitorarAoVivo(chave, maxTentativas, nomeGrupo, apiKey, channelId) {
       } else {
         console.log(`[Scheduler] Tentativa ${n}/${maxTentativas} — buscando ao vivo...`);
         try {
-          const video = await buscarTransmissaoAoVivo(apiKey, channelId);
+          const video = await buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras);
           if (video) {
             await enviarMensagem(nomeGrupo, mensagemParaVideo(video));
             console.log(`[Scheduler] ✅ Link enviado (${video.fonte}): ${video.url}`);
@@ -103,7 +103,7 @@ function iniciarAgendamentos(config) {
   // ── Domingo manhã ──────────────────────────────────────────────────────────
   // Começa às 09h54, verifica a cada 1 min até 10h30 → janela de 36 min → 36 tentativas
   cron.schedule('54 9 * * 0', async () => {
-    await monitorarAoVivo('domingo-manha', 36, nomeGrupo, apiKey, channelId);
+    await monitorarAoVivo('domingo-manha', 36, nomeGrupo, apiKey, channelId, 8);
     desligar('Janela da manhã encerrada.');
   }, { timezone: 'America/Sao_Paulo' });
 
@@ -129,7 +129,7 @@ function iniciarAgendamentos(config) {
         if (estaConectado()) {
           console.log(`[Scheduler] Tentativa ${n}/${maxT} — buscando ao vivo...`);
           try {
-            const video = await buscarTransmissaoAoVivo(apiKey, channelId);
+            const video = await buscarTransmissaoAoVivo(apiKey, channelId, 4);
             if (video) {
               await enviarMensagem(nomeGrupo, mensagemParaVideo(video));
               console.log(`[Scheduler] ✅ Link enviado (${video.fonte}): ${video.url}`);
@@ -162,7 +162,7 @@ function iniciarAgendamentos(config) {
   // ── Quarta-feira ───────────────────────────────────────────────────────────
   // Começa às 19h54, verifica a cada 1 min até 20h30 → janela de 36 min → 36 tentativas
   cron.schedule('54 19 * * 3', async () => {
-    await monitorarAoVivo('quarta-noite', 36, nomeGrupo, apiKey, channelId);
+    await monitorarAoVivo('quarta-noite', 36, nomeGrupo, apiKey, channelId, 4);
     desligar('Janela da quarta encerrada.');
   }, { timezone: 'America/Sao_Paulo' });
 
