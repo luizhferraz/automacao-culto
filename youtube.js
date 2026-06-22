@@ -68,7 +68,7 @@ async function buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras = 8) {
       params: {
         part: 'snippet',
         playlistId: uploadPlaylistId,
-        maxResults: 5,
+        maxResults: 10,
         key: apiKey,
       },
     });

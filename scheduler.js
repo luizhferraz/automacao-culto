@@ -129,7 +129,7 @@ function iniciarAgendamentos(config) {
         if (estaConectado()) {
           console.log(`[Scheduler] Tentativa ${n}/${maxT} — buscando ao vivo...`);
           try {
-            const video = await buscarTransmissaoAoVivo(apiKey, channelId, 4);
+            const video = await buscarTransmissaoAoVivo(apiKey, channelId, 6);
             if (video) {
               await enviarMensagem(nomeGrupo, mensagemParaVideo(video));
               console.log(`[Scheduler] ✅ Link enviado (${video.fonte}): ${video.url}`);
@@ -162,7 +162,7 @@ function iniciarAgendamentos(config) {
   // ── Quarta-feira ───────────────────────────────────────────────────────────
   // Começa às 19h54, verifica a cada 1 min até 20h30 → janela de 36 min → 36 tentativas
   cron.schedule('54 19 * * 3', async () => {
-    await monitorarAoVivo('quarta-noite', 36, nomeGrupo, apiKey, channelId, 4);
+    await monitorarAoVivo('quarta-noite', 36, nomeGrupo, apiKey, channelId, 6);
     desligar('Janela da quarta encerrada.');
   }, { timezone: 'America/Sao_Paulo' });
 
