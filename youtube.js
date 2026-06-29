@@ -83,25 +83,12 @@ async function buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras = 8) {
 
     if (item) {
       const videoId = item.snippet.resourceId.videoId;
-
-      // Verifica se é live ou estreia consultando o status real do vídeo
-      let fonte = 'estreia';
-      try {
-        const { data: videoData } = await axios.get(`${BASE_URL}/videos`, {
-          params: { part: 'snippet', id: videoId, key: apiKey },
-        });
-        const liveStatus = videoData.items?.[0]?.snippet?.liveBroadcastContent;
-        if (liveStatus === 'live') fonte = 'live';
-        console.log(`[YouTube] Playlist — "${item.snippet.title}" | liveBroadcastContent: ${liveStatus} → fonte: ${fonte}`);
-      } catch (err) {
-        console.warn('[YouTube] Não foi possível verificar status do vídeo:', err.message);
-      }
-
+      console.log(`[YouTube] Playlist — "${item.snippet.title}" → fonte: estreia (encontrado via uploads)`);
       return {
         id: videoId,
         titulo: item.snippet.title,
         url: `https://www.youtube.com/watch?v=${videoId}`,
-        fonte,
+        fonte: 'estreia',
       };
     }
   } catch (err) {
