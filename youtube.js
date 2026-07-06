@@ -83,12 +83,29 @@ async function buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras = 8) {
 
     if (item) {
       const videoId = item.snippet.resourceId.videoId;
-      console.log(`[YouTube] Playlist — "${item.snippet.title}" → fonte: estreia (encontrado via uploads)`);
+
+      // Live real vs estreia: uma transmissão ao vivo em andamento tem
+      // contentDetails.duration = 'P0D' (duração indefinida). Uma estreia
+      // tem a duração real do arquivo desde o upload, mesmo antes de ir
+      // ao ar. liveBroadcastContent NÃO serve aqui: estreias em exibição
+      // também retornam 'live'.
+      let fonte = 'estreia';
+      try {
+        const { data: videoData } = await axios.get(`${BASE_URL}/videos`, {
+          params: { part: 'contentDetails', id: videoId, key: apiKey },
+        });
+        const duration = videoData.items?.[0]?.contentDetails?.duration;
+        if (duration === 'P0D') fonte = 'live';
+        console.log(`[YouTube] Playlist — "${item.snippet.title}" | duration: ${duration} → fonte: ${fonte}`);
+      } catch (err) {
+        console.warn('[YouTube] Falha ao verificar duração, assumindo estreia:', err.message);
+      }
+
       return {
         id: videoId,
         titulo: item.snippet.title,
         url: `https://www.youtube.com/watch?v=${videoId}`,
-        fonte: 'estreia',
+        fonte,
       };
     }
   } catch (err) {
