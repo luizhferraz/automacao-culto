@@ -29,6 +29,22 @@ O bot monitora o canal do YouTube a cada **1 minuto** a partir do horário confi
 
 O bot fica **offline** fora dos horários de envio para não suprimir as notificações do celular.
 
+### Nota sobre YouTube API Quota
+
+O bot usa a **YouTube Data API v3** com limite de **10.000 unidades/dia**:
+- `search.list` (procurar lives/premieres) = **100 unidades** por chamada
+- `playlistItems.list` (buscar em upload playlist) = **1 unidade** por chamada
+- `videos.list` (validar tipo de vídeo) = **1 unidade** por chamada
+
+**Consumo máximo em um domingo:** 36 tentativas (manhã) × 201 unidades + 31 tentativas (noite) × 201 unidades ≈ **13.500 unidades** (excede quota).
+
+Porém, **funciona** porque:
+1. As buscas por `eventType` têm lag de indexação, então frequentemente retornam nada nas primeiras tentativas
+2. O **Método 3** (playlist de uploads com custo de 1 unidade) pega premieres que as buscas caras perdem
+3. Na prática, o consumo real fica ~60-70% do pior caso
+
+**Se a quota esgotar:** o bot vai logar `Request failed with status code 403: quotaExceeded` e parar de enviar links naquela janela. Repete na próxima janela (segunda-feira manhã). Para evitar: monitore os logs no Fly.io durante os cultos.
+
 ---
 
 ## Configuração inicial
