@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "setup": "node index.js --setup"
+    "setup": "node index.js --setup",
+    "test": "node testes/simular-aviso.js"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",

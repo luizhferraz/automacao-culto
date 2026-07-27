@@ -19,19 +19,40 @@ function mensagemGravacao(titulo, url) {
   return `🎬 *Culto disponível para assistir*\n\n*${titulo}*\n\n🖥️ Assista aqui:\n${url}`;
 }
 
+// Enviada ao grupo quando o link ainda não saiu alguns minutos após o início do culto.
+// Decisão consciente do Luiz: o texto atribui o atraso à internet, mesmo que o bot só
+// saiba que a busca voltou vazia (a live pode ter atrasado, o título pode estar fora
+// das palavras-chave, ou a quota da API pode ter esgotado). Na prática da igreja o
+// motivo costuma ser a conexão, e a redação foi mantida como ele escreveu.
+function mensagemAtraso() {
+  return (
+    '⚠️ *Olá, irmãos!*\n\n' +
+    'Estamos com instabilidade na internet e, por esse motivo, o link da transmissão ainda não foi disponibilizado.\n\n' +
+    'Já estamos trabalhando para resolver o mais rápido possível e, assim que normalizar, o link será enviado aqui no grupo.\n\n' +
+    'Agradecemos a compreensão de todos! 🙏'
+  );
+}
+
 function mensagemParaVideo(video) {
   if (video.fonte === 'estreia') return mensagemEstreia(video.titulo, video.url);
   return mensagemAoVivo(video.titulo, video.url);
 }
 
-// Retorna uma Promise que resolve quando terminar, com um booleano: true se enviou, false se não encontrou
-function monitorarAoVivo(chave, maxTentativas, nomeGrupo, apiKey, channelId, filtroHoras = 8) {
+// Retorna uma Promise que resolve quando terminar, com um booleano: true se enviou, false se não encontrou.
+// Parâmetros em objeto de propósito: filtroHoras e avisoAposMin são dois números
+// adjacentes que, trocados por engano, quebrariam a janela em silêncio.
+//   avisoAposMin: minutos após o início do monitoramento para avisar o grupo que
+//   o link atrasou. Enviado no máximo uma vez por janela; null desativa.
+function monitorarAoVivo({ chave, maxTentativas, nomeGrupo, apiKey, channelId, filtroHoras = 8, avisoAposMin = null }) {
   if (tentativasAtivas[chave]) {
     console.log(`[Scheduler] Monitoramento ${chave} já está ativo, ignorando.`);
     return Promise.resolve(false);
   }
   tentativasAtivas[chave] = 0;
   console.log(`\n[Scheduler] ▶ Iniciando monitoramento: ${chave} (máx ${maxTentativas} tentativas)`);
+
+  const inicio = Date.now();
+  let avisoEnviado = false;
 
   return new Promise((resolve) => {
     async function tentar() {
@@ -53,6 +74,20 @@ function monitorarAoVivo(chave, maxTentativas, nomeGrupo, apiKey, channelId, fil
           }
         } catch (err) {
           console.error('[Scheduler] Erro:', err.message);
+        }
+
+        // Nada encontrado até aqui. Passado o prazo, avisa o grupo uma única vez.
+        // avisoEnviado só vira true se o envio deu certo, então uma falha aqui
+        // é reavaliada na próxima tentativa.
+        const minutosSemLink = (Date.now() - inicio) / 60000;
+        if (avisoAposMin !== null && !avisoEnviado && minutosSemLink >= avisoAposMin) {
+          try {
+            await enviarMensagem(nomeGrupo, mensagemAtraso());
+            avisoEnviado = true;
+            console.log(`[Scheduler] ⚠️  Aviso de atraso enviado ao grupo (${minutosSemLink.toFixed(1)} min sem link).`);
+          } catch (err) {
+            console.error('[Scheduler] Falha ao enviar aviso de atraso:', err.message);
+          }
         }
       }
 
@@ -101,16 +136,24 @@ function iniciarAgendamentos(config) {
 
   // ── Domingo manhã ──────────────────────────────────────────────────────────
   // Começa às 09h54, verifica a cada 1 min até 10h30 → janela de 36 min → 36 tentativas
+  // Culto às 10h00 → aviso de atraso às 10h03 (9 min após o início do monitoramento)
   cron.schedule('54 9 * * 0', async () => {
-    await monitorarAoVivo('domingo-manha', 36, nomeGrupo, apiKey, channelId, 8);
+    await monitorarAoVivo({
+      chave: 'domingo-manha', maxTentativas: 36, nomeGrupo, apiKey, channelId,
+      filtroHoras: 8, avisoAposMin: 9,
+    });
     desligar('Janela da manhã encerrada.');
   }, { timezone: 'America/Sao_Paulo' });
 
   // ── Domingo noite ──────────────────────────────────────────────────────────
   // Começa às 18h59, verifica a cada 1 min até 19h30 → janela de 31 min → 31 tentativas
+  // Culto às 19h00 → aviso de atraso às 19h03 (4 min após o início do monitoramento)
   // (tenta ao vivo primeiro; se não achar, envia gravação como fallback)
   cron.schedule('59 18 * * 0', async () => {
-    const enviou = await monitorarAoVivo('domingo-noite', 31, nomeGrupo, apiKey, channelId, 7);
+    const enviou = await monitorarAoVivo({
+      chave: 'domingo-noite', maxTentativas: 31, nomeGrupo, apiKey, channelId,
+      filtroHoras: 7, avisoAposMin: 4,
+    });
     if (!enviou) {
       console.log('[Scheduler] Ao vivo não encontrado, tentando gravação recente...');
       await enviarGravacao(nomeGrupo, apiKey, channelId);
@@ -120,16 +163,22 @@ function iniciarAgendamentos(config) {
 
   // ── Quarta-feira ───────────────────────────────────────────────────────────
   // Começa às 19h54, verifica a cada 1 min até 20h30 → janela de 36 min → 36 tentativas
+  // Culto às 20h00 → aviso de atraso às 20h03 (9 min após o início do monitoramento)
   cron.schedule('54 19 * * 3', async () => {
-    await monitorarAoVivo('quarta-noite', 36, nomeGrupo, apiKey, channelId, 7);
+    await monitorarAoVivo({
+      chave: 'quarta-noite', maxTentativas: 36, nomeGrupo, apiKey, channelId,
+      filtroHoras: 7, avisoAposMin: 9,
+    });
     desligar('Janela da quarta encerrada.');
   }, { timezone: 'America/Sao_Paulo' });
 
   console.log('📅 Agendamentos configurados (America/Sao_Paulo):');
-  console.log('   • Domingo     09h54 → verifica a cada 1 min até 10h30');
-  console.log('   • Domingo     18h59 → verifica a cada 1 min até 19h30 (fallback: gravação)');
-  console.log('   • Quarta-feira 19h54 → verifica a cada 1 min até 20h30');
+  console.log('   • Domingo     09h54 → verifica a cada 1 min até 10h30 (aviso de atraso às 10h03)');
+  console.log('   • Domingo     18h59 → verifica a cada 1 min até 19h30 (aviso às 19h03, fallback: gravação)');
+  console.log('   • Quarta-feira 19h54 → verifica a cada 1 min até 20h30 (aviso de atraso às 20h03)');
   console.log('   Títulos aceitos: "Culto da Família", "Culto de Fé", "Especial de..." (e variações)');
 }
 
-module.exports = { iniciarAgendamentos };
+// monitorarAoVivo e mensagemAtraso são exportados para permitir testes automatizados
+// (ver testes/simular-aviso.js), que rodam a função real com relógio simulado.
+module.exports = { iniciarAgendamentos, monitorarAoVivo, mensagemAtraso };

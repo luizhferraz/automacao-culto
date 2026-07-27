@@ -15,11 +15,16 @@ O bot monitora o canal do YouTube a cada **1 minuto** a partir do horário confi
 
 **Horários monitorados:**
 
-| Dia | Início | Janela | Comportamento |
-|-----|--------|--------|---------------|
-| Domingo manhã | 9h54 | até 10h30 | Envia link ao vivo |
-| Domingo noite | 18h59 | até 19h30 | Envia link ao vivo; se não encontrar, envia a gravação mais recente (últimas 6h) |
-| Quarta-feira | 19h54 | até 20h30 | Envia link ao vivo |
+| Dia | Início | Culto | Janela | Aviso de atraso | Comportamento |
+|-----|--------|-------|--------|-----------------|---------------|
+| Domingo manhã | 9h54 | 10h00 | até 10h30 | 10h03 | Envia link ao vivo |
+| Domingo noite | 18h59 | 19h00 | até 19h30 | 19h03 | Envia link ao vivo; se não encontrar, envia a gravação mais recente (últimas 6h) |
+| Quarta-feira | 19h54 | 20h00 | até 20h30 | 20h03 | Envia link ao vivo |
+
+**Aviso de atraso:** se o link ainda não foi encontrado 3 minutos após o horário do culto, o bot
+envia uma mensagem ao grupo avisando que a transmissão atrasou. É enviado no máximo uma vez por
+janela e não interrompe a busca: se o link aparecer depois, ele é enviado normalmente em seguida.
+Se o primeiro envio do aviso falhar, o bot tenta de novo na tentativa seguinte, sem duplicar.
 
 **Ciclo automático (Fly.io + GitHub Actions):**
 1. GitHub Actions liga a máquina 5 min antes de cada janela
@@ -176,6 +181,32 @@ Culto da Família | 01/06 | 10h
 🖥️ Assista aqui:
 https://www.youtube.com/watch?v=...
 ```
+
+**Aviso de atraso (3 min após o início do culto, se o link não foi encontrado):**
+```
+⚠️ Olá, irmãos!
+
+Estamos com instabilidade na internet e, por esse motivo, o link da
+transmissão ainda não foi disponibilizado.
+
+Já estamos trabalhando para resolver o mais rápido possível e, assim que
+normalizar, o link será enviado aqui no grupo.
+
+Agradecemos a compreensão de todos! 🙏
+```
+
+---
+
+## Testes
+
+```bash
+npm test
+```
+
+Roda `testes/simular-aviso.js`, que exercita a função real `monitorarAoVivo` com relógio
+simulado (sem esperar 36 minutos e sem tocar no YouTube ou no WhatsApp). Cobre: aviso no
+minuto certo nas três janelas, aviso suprimido quando o link chega antes do prazo, aviso
+seguido do link quando ele chega depois, e reenvio sem duplicação quando o primeiro envio falha.
 
 ---
 
