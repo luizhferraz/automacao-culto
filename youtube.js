@@ -74,7 +74,7 @@ async function buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras = 8) {
     });
 
     const limite = new Date(Date.now() - filtroHoras * 60 * 60 * 1000);
-    console.log(`[YouTube] Playlist — filtro: últimas ${filtroHoras}h (desde ${limite.toISOString()})`);
+    console.log(`[YouTube] Playlist, filtro: últimas ${filtroHoras}h (desde ${limite.toISOString()})`);
 
     const item = data.items?.find(i =>
       ehCulto(i.snippet.title) &&
@@ -96,7 +96,7 @@ async function buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras = 8) {
         });
         const duration = videoData.items?.[0]?.contentDetails?.duration;
         if (duration === 'P0D') fonte = 'live';
-        console.log(`[YouTube] Playlist — "${item.snippet.title}" | duration: ${duration} → fonte: ${fonte}`);
+        console.log(`[YouTube] Playlist: "${item.snippet.title}" | duration: ${duration} → fonte: ${fonte}`);
       } catch (err) {
         console.warn('[YouTube] Falha ao verificar duração, assumindo estreia:', err.message);
       }

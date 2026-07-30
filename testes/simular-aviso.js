@@ -40,6 +40,7 @@ require.cache[CAMINHO_WHATSAPP] = {
   loaded: true,
   exports: {
     enviarMensagem: async (chatId, texto) => comportamentoEnvio(chatId, texto),
+    encerrarSessao: async () => {},
     estaConectado: () => true,
   },
 };

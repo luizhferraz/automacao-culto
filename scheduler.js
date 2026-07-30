@@ -1,6 +1,6 @@
 const cron = require('node-cron');
 const { buscarTransmissaoAoVivo, buscarUltimaGravacao } = require('./youtube');
-const { enviarMensagem, estaConectado } = require('./whatsapp');
+const { enviarMensagem, encerrarSessao, estaConectado } = require('./whatsapp');
 
 // Intervalo entre tentativas (minutos)
 const INTERVALO_MIN = 1;
@@ -62,7 +62,7 @@ function monitorarAoVivo({ chave, maxTentativas, nomeGrupo, apiKey, channelId, f
       if (!estaConectado()) {
         console.warn('[Scheduler] WhatsApp não conectado, aguardando...');
       } else {
-        console.log(`[Scheduler] Tentativa ${n}/${maxTentativas} — buscando ao vivo...`);
+        console.log(`[Scheduler] Tentativa ${n}/${maxTentativas}, buscando ao vivo...`);
         try {
           const video = await buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras);
           if (video) {
@@ -126,9 +126,18 @@ async function enviarGravacao(nomeGrupo, apiKey, channelId) {
   }
 }
 
-function desligar(motivo) {
-  console.log(`🛑 ${motivo} Encerrando processo — máquina será desligada pelo Fly.io.`);
-  setTimeout(() => process.exit(0), 3000); // 3s para logs fluírem
+// Precisa ser async e ser aguardado: o encerrarSessao segura a conexão viva por um tempo
+// para atender os pedidos de reenvio do WhatsApp. Matar o processo antes disso é o que
+// deixava as pessoas com "Aguardando mensagem" na tela.
+async function desligar(motivo) {
+  console.log(`🛑 ${motivo}`);
+  try {
+    await encerrarSessao();
+  } catch (err) {
+    console.error('[Scheduler] Erro ao encerrar a sessão do WhatsApp:', err.message);
+  }
+  console.log('Encerrando processo. A máquina será desligada pelo Fly.io.');
+  setTimeout(() => process.exit(0), 3000); // 3s para os logs fluírem
 }
 
 function iniciarAgendamentos(config) {
@@ -142,7 +151,7 @@ function iniciarAgendamentos(config) {
       chave: 'domingo-manha', maxTentativas: 36, nomeGrupo, apiKey, channelId,
       filtroHoras: 8, avisoAposMin: 9,
     });
-    desligar('Janela da manhã encerrada.');
+    await desligar('Janela da manhã encerrada.');
   }, { timezone: 'America/Sao_Paulo' });
 
   // ── Domingo noite ──────────────────────────────────────────────────────────
@@ -158,7 +167,7 @@ function iniciarAgendamentos(config) {
       console.log('[Scheduler] Ao vivo não encontrado, tentando gravação recente...');
       await enviarGravacao(nomeGrupo, apiKey, channelId);
     }
-    desligar('Janela da noite encerrada.');
+    await desligar('Janela da noite encerrada.');
   }, { timezone: 'America/Sao_Paulo' });
 
   // ── Quarta-feira ───────────────────────────────────────────────────────────
@@ -169,7 +178,7 @@ function iniciarAgendamentos(config) {
       chave: 'quarta-noite', maxTentativas: 36, nomeGrupo, apiKey, channelId,
       filtroHoras: 7, avisoAposMin: 9,
     });
-    desligar('Janela da quarta encerrada.');
+    await desligar('Janela da quarta encerrada.');
   }, { timezone: 'America/Sao_Paulo' });
 
   console.log('📅 Agendamentos configurados (America/Sao_Paulo):');
