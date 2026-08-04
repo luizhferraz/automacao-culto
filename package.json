@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "setup": "node index.js --setup",
-    "test": "node testes/simular-aviso.js && node testes/simular-reenvio.js && FORCAR_SESSOES=1 node testes/simular-reenvio.js"
+    "test": "node testes/simular-aviso.js && node testes/simular-diagnostico.js && node testes/simular-reenvio.js && FORCAR_SESSOES=1 node testes/simular-reenvio.js"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",

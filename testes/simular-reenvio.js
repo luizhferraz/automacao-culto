@@ -41,7 +41,6 @@ process.env.RETRY_GRACE_SIGTERM_MS = '50';
 process.env.ESPERA_APOS_CONECTAR_MS = '0';
 process.env.CONEXAO_TIMEOUT_MS = '2000';
 process.env.BAILEYS_LOG_LEVEL = 'silent';
-process.env.DIAG_LOG_LEVEL = 'silent';
 
 const FORCANDO = process.env.FORCAR_SESSOES === '1';
 

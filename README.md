@@ -91,12 +91,18 @@ envio). Ligue com `fly secrets set FORCAR_SESSOES=1` se as reclamações persist
 Os logs do Fly são só ao vivo: quando a máquina desliga, some tudo. Por isso cada janela grava
 em `/data/diagnostico/`:
 
-- `<carimbo>.log`: o log da biblioteca em nível `debug`, com as linhas que decidem tudo,
+- `<carimbo>.log`: as linhas do Baileys que decidem o diagnóstico de entrega,
   `sending new sender key` (a lista de aparelhos que receberam a chave) e
   `Failed to encrypt for recipient` (quem ficou de fora, com o jid). A diferença entre as duas
-  é a **lista nominal** de quem não recebeu.
+  é a **lista nominal** de quem não recebeu. Tudo de nível `warn` para cima entra também.
 - `resumo-<carimbo>.json`: ids e horários dos envios, tamanho do grupo, quantos aparelhos,
   quem confirmou entrega, quantos reenvios foram atendidos e quantas gravações falharam.
+
+O log é filtrado por uma lista de frases, não por nível. Medido em produção: em `debug` puro o
+Baileys escreve cerca de **1 MB por minuto** ao drenar a fila de uma semana, e quase tudo é
+falha de descriptografia de mensagem *recebida*, que não tem relação com o problema de
+entrega. Uma conexão ociosa de um dia encheria o volume de 1 GB. Com o filtro sobram algumas
+centenas de linhas por janela, e ainda existe o teto de `DIAG_MAX_BYTES` como rede.
 
 Ficam os 20 mais recentes. Para ler depois do culto:
 
@@ -168,8 +174,9 @@ TZ=America/Sao_Paulo
 | `FORCAR_SESSOES` | (desligado) | `1` recria as sessões de sinal em lote antes do envio. Ver a quinta defesa acima |
 | `LOTE_SESSOES` | `50` | Tamanho do lote acima. Um aparelho com erro derruba o lote inteiro, por isso é fatiado |
 | `BAILEYS_LOG_LEVEL` | `warn` | Nível do log que vai para o stdout (o `fly logs`) |
-| `DIAG_LOG_LEVEL` | `debug` | Nível do log que vai para o arquivo no volume |
 | `DIAG_DIR` | `/data/diagnostico` | Onde ficam os logs e resumos por janela |
+| `DIAG_MAX_ARQUIVOS` | `20` | Quantos logs e quantos resumos manter |
+| `DIAG_MAX_BYTES` | `8388608` | Teto por arquivo de log (8 MB), para nunca encher o volume |
 | `AUTH_DIR` | `.baileys_auth` | Onde ficam a sessão do WhatsApp e o histórico de mensagens enviadas |
 
 > **Como obter o `YOUTUBE_API_KEY`:**
@@ -291,7 +298,7 @@ Agradecemos a compreensão de todos! 🙏
 npm test
 ```
 
-São 109 verificações, todas rodando o código real com as dependências externas trocadas por
+São três suítes, todas rodando o código real com as dependências externas trocadas por
 dublês. Nenhuma delas toca no YouTube ou no WhatsApp de verdade.
 
 **`testes/simular-aviso.js`** exercita `monitorarAoVivo` com relógio simulado (sem esperar 36
@@ -310,8 +317,12 @@ estado de sinal drenadas antes da saída, uma queda antes do envio virando erro 
 sucesso silencioso, o `conectar()` da subida devolvendo `false` em vez de derrubar o processo,
 e as duas mensagens de uma mesma janela reaproveitando uma única conexão.
 
-Os três testes das correções novas foram verificados revertendo cada correção e conferindo que
-o teste correspondente falha.
+**`testes/simular-diagnostico.js`** cobre o registro em disco: o filtro descartando o ruído do
+Baileys e preservando as linhas que identificam quem não recebeu, a poda tratando logs e
+resumos de forma independente, e o resumo da janela voltando legível do disco.
+
+Os testes das correções novas foram verificados revertendo cada correção e conferindo que o
+teste correspondente falha.
 
 ---
 
@@ -324,8 +335,8 @@ culto-automation/
 ├── youtube.js              # Busca de transmissões ao vivo via YouTube Data API
 ├── whatsapp.js             # Conexão e envio via Baileys (sessão única por janela)
 ├── mensagens-enviadas.js   # Histórico em disco, usado para atender pedidos de reenvio
-├── diagnostico.js          # Log e resumo por janela gravados no volume
-├── testes/                 # Simulações do aviso de atraso e do ciclo de reenvio
+├── diagnostico.js          # Log filtrado e resumo por janela gravados no volume
+├── testes/                 # Aviso de atraso, ciclo de reenvio e registro em disco
 ├── fly.toml                # Configuração do Fly.io
 ├── Dockerfile        # Imagem Docker (Node 20 Alpine)
 └── .github/
