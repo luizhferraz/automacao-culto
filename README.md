@@ -78,13 +78,20 @@ Quatro defesas:
    sobrou na fila assim que o websocket fecha, então encerrar no meio da fila jogava fora
    exatamente os pedidos que se queria atender.
 
-Existe ainda uma quinta defesa, **desligada por padrão**: `FORCAR_SESSOES=1` recria as sessões
-de sinal em lote antes do envio. Ela ataca o caso de quem reinstalou o WhatsApp ou trocou de
-aparelho, porque nesse cenário a sessão do lado da pessoa foi destruída mas o arquivo do bot
-continua intacto no volume, e a validação que o Baileys faz antes de distribuir a chave é
-puramente local: não tem como saber que o outro lado apagou a sessão dele. Está desligada
-porque é a mudança menos medida da série (descarta o ratchet de centenas de sessões a cada
-envio). Ligue com `fly secrets set FORCAR_SESSOES=1` se as reclamações persistirem.
+Existe ainda uma quinta defesa: `FORCAR_SESSOES=1` recria as sessões de sinal em lote **na
+subida**, nos minutos ociosos antes do culto. Ela ataca o caso de quem reinstalou o WhatsApp
+ou trocou de aparelho, porque nesse cenário a sessão do lado da pessoa foi destruída mas o
+arquivo do bot continua intacto no volume, e a validação que o Baileys faz antes de distribuir
+a chave é puramente local: não tem como saber que o outro lado apagou a sessão dele.
+
+Não dá para ser cirúrgico aqui. Sessão obsoleta é, por construção, invisível do lado do bot:
+não existe log, erro ou sinal que aponte quem está nessa situação. Ou se recria tudo, ou não
+se conserta ninguém. Os custos são baixos no uso deste bot: descartar o ratchet não tem efeito
+funcional, e a chave de uso único que se consome de cada pessoa é reposta pelo aparelho dela
+sozinho (e se acabarem, o servidor devolve a chave assinada e funciona igual). O preparo roda
+na conexão da subida justamente para não atrasar o link, e o laço vigia o próprio prazo
+(`PREPARO_TIMEOUT_MS`), parando sozinho em vez de continuar rodando em segundo plano durante o
+envio. Se o preparo falhar por qualquer motivo, o link sai do mesmo jeito.
 
 ### Diagnóstico
 
@@ -171,8 +178,9 @@ TZ=America/Sao_Paulo
 | `RETRY_QUIET_MS` | `45000` | Silêncio necessário para encerrar. Cada pedido de reenvio empurra o fechamento para frente |
 | `RETRY_GRACE_MAX_MS` | `600000` | Teto absoluto da janela, para a máquina não ficar de pé indefinidamente |
 | `RETRY_GRACE_SIGTERM_MS` | `3000` | Espera curta quando o Fly manda SIGTERM (aí não dá para segurar a janela inteira) |
-| `FORCAR_SESSOES` | (desligado) | `1` recria as sessões de sinal em lote antes do envio. Ver a quinta defesa acima |
+| `FORCAR_SESSOES` | (desligado) | `1` recria as sessões de sinal em lote na subida. Ver a quinta defesa acima |
 | `LOTE_SESSOES` | `50` | Tamanho do lote acima. Um aparelho com erro derruba o lote inteiro, por isso é fatiado |
+| `PREPARO_TIMEOUT_MS` | `45000` | Prazo do preparo do grupo. Estourou, para onde está e deixa o envio seguir |
 | `BAILEYS_LOG_LEVEL` | `warn` | Nível do log que vai para o stdout (o `fly logs`) |
 | `DIAG_DIR` | `/data/diagnostico` | Onde ficam os logs e resumos por janela |
 | `DIAG_MAX_ARQUIVOS` | `20` | Quantos logs e quantos resumos manter |

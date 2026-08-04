@@ -38,8 +38,10 @@ const PRAZO_PREPARO_MS = Number(process.env.PREPARO_TIMEOUT_MS || 45000);
 
 const esperar = (ms) => new Promise(r => setTimeout(r, ms));
 
-// Corre a promessa com prazo. Não cancela o trabalho em si (não dá, é rede), só para de
-// esperar por ele.
+// Corre a promessa com prazo. Serve para uma chamada de rede solta, que no pior caso fica
+// pendurada sem efeito nenhum. NÃO use para envolver um laço que grava estado: o race não
+// cancela o trabalho, e o laço continuaria rodando em segundo plano. Para laço, passe o
+// limite adiante e deixe ele parar sozinho (ver prepararGrupo).
 function comPrazo(promessa, ms, oQue) {
   let relogio;
   const prazo = new Promise((_, rejeitar) => {
@@ -217,25 +219,40 @@ async function garantirSessoesFrescas(s, chatId) {
   if (s.medido) return;
   s.medido = true;
   try {
-    await comPrazo(prepararGrupo(s, chatId), PRAZO_PREPARO_MS, 'preparo do grupo');
+    await prepararGrupo(s, chatId, Date.now() + PRAZO_PREPARO_MS);
   } catch (err) {
     // Diagnóstico e remediação são acessórios: o link do culto tem que sair de qualquer jeito.
     console.warn('[WhatsApp] Preparo do grupo não completou:', err.message);
   }
 }
 
-async function prepararGrupo(s, chatId) {
-  const meta = await s.sock.groupMetadata(chatId);
+async function prepararGrupo(s, chatId, limite) {
+  const restante = () => Math.max(1000, limite - Date.now());
+
+  const meta = await comPrazo(s.sock.groupMetadata(chatId), restante(), 'metadados do grupo');
   const participantes = meta?.participants?.length || 0;
-  const aparelhos = await s.sock.getUSyncDevices(meta.participants.map(p => p.id), false, false);
+  const aparelhos = await comPrazo(
+    s.sock.getUSyncDevices(meta.participants.map(p => p.id), false, false),
+    restante(),
+    'lista de aparelhos'
+  );
   const jids = [...new Set(aparelhos.map(d => d.jid).filter(Boolean))];
 
-  s.grupo = { participantes, aparelhos: jids.length, sessoesForcadas: 0, lotesComFalha: 0 };
+  s.grupo = { participantes, aparelhos: jids.length, sessoesForcadas: 0, lotesComFalha: 0, interrompido: false };
   console.log(`[WhatsApp] 👥 Grupo com ${participantes} pessoa(s) e ${jids.length} aparelho(s).`);
 
   if (!FORCAR_SESSOES) return;
 
   for (let i = 0; i < jids.length; i += LOTE_SESSOES) {
+    // O laço vigia o próprio prazo. Envolvê-lo num Promise.race pareceria equivalente, mas o
+    // race não cancela nada: os lotes seguintes continuariam rodando em segundo plano e
+    // reescrevendo estado de sessão no meio da criptografia da mensagem.
+    if (Date.now() >= limite) {
+      s.grupo.interrompido = true;
+      console.warn(`[WhatsApp] Preparo passou do prazo; parei em ${i} de ${jids.length} aparelho(s).`);
+      break;
+    }
+
     const lote = jids.slice(i, i + LOTE_SESSOES);
     try {
       await s.sock.assertSessions(lote, true);
@@ -375,9 +392,15 @@ async function abrirSessao() {
  * Baileys recriar a sessão daquele aparelho, o que conserta gente que estava travada desde
  * o domingo anterior.
  */
-async function conectar() {
+async function conectar(chatId) {
   try {
-    await abrirSessao();
+    const s = await abrirSessao();
+    // Mede o grupo e, se ligado, recria as sessões AGORA, nos minutos ociosos antes do culto,
+    // e não no meio do enviarMensagem. São 17 idas e voltas com o servidor para um grupo deste
+    // tamanho: fazer isso na hora do envio atrasaria o link à toa, tendo cinco minutos de
+    // folga disponíveis aqui. Se a conexão cair e o envio abrir outra, o preparo roda de novo
+    // na sessão nova, porque o controle (`medido`) vive na sessão.
+    if (chatId) await garantirSessoesFrescas(s, chatId);
     return true;
   } catch (err) {
     // Não é fatal: o envio abre a conexão de novo quando chegar a hora.

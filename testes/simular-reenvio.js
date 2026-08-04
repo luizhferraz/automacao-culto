@@ -53,6 +53,8 @@ let contadorId = 0;
 let socketsCriados = [];
 // Como o próximo socket deve se comportar: 'abre' (normal) ou 'fecha-antes' (cai sem abrir).
 let comportamentoConexao = 'abre';
+// Faz o groupMetadata falhar, para provar que o preparo nunca segura o link.
+let metadataQuebrado = false;
 let gravacoesConcluidas = 0;
 let gravacoesIniciadas = 0;
 // Categorias que chegaram ao armazenamento de verdade, depois de passar pelo whatsapp.js.
@@ -74,6 +76,9 @@ function criarSocketFalso(opcoes) {
     // Quantos aparelhos o Baileys veria como "já tem a chave" no início de cada envio.
     jaTinhamChave: [],
     sessoesForcadas: [],
+    // Quantas vezes o grupo foi medido. Serve para provar que o preparo roda na subida e não
+    // se repete no envio, valendo com o FORCAR_SESSOES ligado ou desligado.
+    medicoes: 0,
     ev: {
       on: (evento, handler) => {
         if (!ouvintes.has(evento)) ouvintes.set(evento, []);
@@ -87,7 +92,11 @@ function criarSocketFalso(opcoes) {
       sock.encerrado = true;
     },
     groupFetchAllParticipating: async () => ({ 'grupo@g.us': { subject: 'Avisos' } }),
-    groupMetadata: async () => ({ participants: PARTICIPANTES.map(id => ({ id })) }),
+    groupMetadata: async () => {
+      sock.medicoes++;
+      if (metadataQuebrado) throw new Error('grupo indisponível');
+      return { participants: PARTICIPANTES.map(id => ({ id })) };
+    },
     getUSyncDevices: async (ids) => ids.map(id => ({ jid: id })),
     assertSessions: async (jids, force) => {
       sock.sessoesForcadas.push({ quantidade: jids.length, force: !!force });
@@ -200,6 +209,7 @@ function reiniciar() {
   gravacoesIniciadas = 0;
   categoriasGravadas = [];
   armazenamento = {};
+  metadataQuebrado = false;
 }
 
 const bytesDe = (m) => Buffer.from(proto.Message.encode(proto.Message.fromObject(m)).finish());
@@ -285,7 +295,50 @@ async function main() {
     console.log('');
   }
 
-  // 3: envio guarda no histórico, mantém a conexão e o getMessage sabe responder
+  // 3: o preparo do grupo acontece na subida, não no meio do envio
+  {
+    reiniciar();
+    console.log('▶ preparo na subida: mede o grupo antes da hora do envio, não durante');
+
+    await whatsapp.conectar('grupo@g.us');
+    const sock = socketsCriados[0];
+
+    checar('conectou na subida', socketsCriados.length === 1);
+    checar('mediu o grupo já na subida', sock.medicoes === 1, `→ ${sock.medicoes} medição(ões)`);
+    checar('mediu antes de qualquer envio', sock.enviadas.length === 0);
+    if (FORCANDO) {
+      checar('recriou as sessões na subida', sock.sessoesForcadas.length === 1, `→ ${sock.sessoesForcadas.length} lote(s)`);
+    }
+
+    // O envio depois disso não pode repetir o preparo, senão o atraso volta para a hora errada.
+    await whatsapp.enviarMensagem('grupo@g.us', 'link do culto');
+    checar('o envio não repetiu a medição', sock.medicoes === 1, `→ ${sock.medicoes}`);
+    checar(
+      'o envio não repetiu a recriação de sessões',
+      sock.sessoesForcadas.length === (FORCANDO ? 1 : 0),
+      `→ ${sock.sessoesForcadas.length} lote(s)`
+    );
+    await whatsapp.encerrarSessao();
+    console.log('');
+  }
+
+  // 4: preparo quebrado não pode segurar o link do culto
+  {
+    reiniciar();
+    metadataQuebrado = true;
+    console.log('▶ preparo com falha: o link do culto sai mesmo assim');
+
+    await whatsapp.conectar('grupo@g.us');
+    const id = await whatsapp.enviarMensagem('grupo@g.us', 'link do culto');
+
+    checar('mensagem enviada apesar do preparo ter falhado', !!id);
+    checar('mensagem foi para o histórico', !!(await mensagens.buscar(id)));
+    checar('nenhuma sessão foi forçada, já que nem a lista saiu', socketsCriados[0].sessoesForcadas.length === 0);
+    await whatsapp.encerrarSessao();
+    console.log('');
+  }
+
+  // 5: envio guarda no histórico, mantém a conexão e o getMessage sabe responder
   {
     reiniciar();
     console.log('▶ envio: guarda no histórico e o socket sabe atender o pedido de reenvio');

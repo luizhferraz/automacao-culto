@@ -76,7 +76,9 @@ async function main() {
   // do culto, e esse tempo era desperdiçado com o socket fechado. Conectando agora, a fila de
   // pedidos de reenvio que o WhatsApp acumulou durante a semana é entregue e atendida com a
   // conexão ociosa, o que conserta quem ficou travado no culto anterior antes do envio de hoje.
-  await conectar();
+  // O grupo vai junto para o preparo das sessões também caber nesta folga, em vez de atrasar
+  // o link na hora do envio.
+  await conectar(config.nomeGrupo);
 
   iniciarAgendamentos(config);
   console.log('\n✅ Bot rodando! Aguardando os horários agendados...');
