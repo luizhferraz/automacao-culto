@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { iniciarCliente, enviarMensagem, encerrarSessao, listarTodosChats, GRACA_SIGTERM_MS } = require('./whatsapp');
+const { iniciarCliente, conectar, enviarMensagem, encerrarSessao, listarTodosChats, GRACA_SIGTERM_MS } = require('./whatsapp');
 const { iniciarAgendamentos } = require('./scheduler');
 const { buscarTransmissaoAoVivo, buscarUltimaGravacao } = require('./youtube');
 
@@ -49,12 +49,6 @@ async function main() {
 
   await iniciarCliente();
 
-  if (args.includes('--diagnostico')) {
-    const { diagnosticarDOM } = require('./whatsapp');
-    await diagnosticarDOM();
-    process.exit(0);
-  }
-
   if (args.includes('--listar-grupos')) {
     console.log('\n📋 Grupos encontrados:\n');
     const chats = await listarTodosChats();
@@ -78,6 +72,12 @@ async function main() {
     process.exit(falhou ? 1 : 0);
   }
 
+  // Conecta já na subida, sem esperar a hora do envio. A máquina liga cerca de 5 min antes
+  // do culto, e esse tempo era desperdiçado com o socket fechado. Conectando agora, a fila de
+  // pedidos de reenvio que o WhatsApp acumulou durante a semana é entregue e atendida com a
+  // conexão ociosa, o que conserta quem ficou travado no culto anterior antes do envio de hoje.
+  await conectar();
+
   iniciarAgendamentos(config);
   console.log('\n✅ Bot rodando! Aguardando os horários agendados...');
   console.log('   (Mantenha este terminal aberto)\n');
@@ -91,12 +91,16 @@ async function encerrarComGraca(sinal) {
   if (encerrando) return;
   encerrando = true;
   console.log(`\n${sinal} recebido. Fechando a sessão do WhatsApp antes de sair...`);
+  let resumo = null;
   try {
-    await encerrarSessao({ graca: GRACA_SIGTERM_MS });
+    resumo = await encerrarSessao({ graca: GRACA_SIGTERM_MS });
   } catch (err) {
     console.error('Erro ao encerrar a sessão:', err.message);
   }
-  process.exit(0);
+  // Sai com código diferente de zero quando alguma gravação de estado de sinal falhou. O
+  // `fly machine status` mostra o exit_code no histórico de eventos, então isso vira alerta
+  // sem depender de log nenhum.
+  process.exit(resumo?.falhasDeGravacao > 0 ? 1 : 0);
 }
 
 process.on('SIGTERM', () => encerrarComGraca('SIGTERM'));
@@ -104,5 +108,8 @@ process.on('SIGINT', () => encerrarComGraca('SIGINT'));
 
 main().catch(err => {
   console.error('Erro fatal:', err.message);
+  // Descarrega o log em disco antes de sair: numa falha é justamente quando ele importa,
+  // e o buffer do pino é assíncrono.
+  require('./diagnostico').encerrar();
   process.exit(1);
 });

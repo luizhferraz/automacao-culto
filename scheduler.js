@@ -131,13 +131,18 @@ async function enviarGravacao(nomeGrupo, apiKey, channelId) {
 // deixava as pessoas com "Aguardando mensagem" na tela.
 async function desligar(motivo) {
   console.log(`🛑 ${motivo}`);
+  let resumo = null;
   try {
-    await encerrarSessao();
+    resumo = await encerrarSessao();
   } catch (err) {
     console.error('[Scheduler] Erro ao encerrar a sessão do WhatsApp:', err.message);
   }
   console.log('Encerrando processo. A máquina será desligada pelo Fly.io.');
-  setTimeout(() => process.exit(0), 3000); // 3s para os logs fluírem
+  // Código diferente de zero quando alguma gravação de estado de sinal falhou: o exit_code
+  // aparece no histórico de eventos do `fly machine status`, então serve de alerta mesmo
+  // depois que os logs somem.
+  const codigo = resumo?.falhasDeGravacao > 0 ? 1 : 0;
+  setTimeout(() => process.exit(codigo), 3000); // 3s para os logs fluírem
 }
 
 function iniciarAgendamentos(config) {

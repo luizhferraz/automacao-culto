@@ -1,34 +1,52 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
-const pino = require('pino');
 const path = require('path');
-const { readdir, unlink, writeFile, access } = require('fs/promises');
+const { readdir, unlink } = require('fs/promises');
 const qrcode = require('qrcode-terminal');
 const mensagens = require('./mensagens-enviadas');
+const diagnostico = require('./diagnostico');
 
 const AUTH_DIR = process.env.AUTH_DIR || '.baileys_auth';
 
-// Quanto tempo a conexão fica de pé depois do último envio, antes de desligar.
-// Esse tempo não é enfeite: quando um aparelho não consegue descriptografar a mensagem,
-// ele manda um pedido de reenvio (retry receipt) alguns segundos depois. Se o socket já
-// morreu, ninguém atende, e aquela pessoa fica com "Aguardando mensagem" para sempre.
-const GRACA_REENVIO_MS = Number(process.env.RETRY_GRACE_MS || 120000);
+// ── Janela de reenvio ────────────────────────────────────────────────────────
+// Quando o aparelho de alguém não consegue descriptografar, ele manda de volta um pedido de
+// reenvio (retry receipt). Se o socket já morreu, ninguém atende e a pessoa fica com
+// "Aguardando mensagem". A janela abaixo é o tempo que a conexão fica de pé para atender.
+//
+// São três números porque um relógio fixo é a coisa errada: o processador de nós offline do
+// Baileys abandona em silêncio o que sobrou na fila assim que o websocket fecha
+// (offline-node-processor.js: `while (nodes.length && deps.isWsOpen())`). Encerrar no meio da
+// fila é jogar fora exatamente os pedidos que se queria atender.
+const GRACA_MINIMA_MS = Number(process.env.RETRY_GRACE_MS || 120000);
+const GRACA_QUIETUDE_MS = Number(process.env.RETRY_QUIET_MS || 45000);
+const GRACA_MAXIMA_MS = Number(process.env.RETRY_GRACE_MAX_MS || 600000);
+const PASSO_ESPERA_MS = Number(process.env.RETRY_PASSO_MS || 5000);
 
-// Tempo curto usado quando o Fly manda SIGTERM: ali não dá para segurar dois minutos.
-// O Fly derruba o processo 5s depois do sinal, então isto precisa caber com folga
-// para ainda sobrar tempo de gravar o estado de sinal no volume.
+// Tempo curto usado quando o Fly manda SIGTERM: ali não dá para segurar a janela inteira.
 const GRACA_SIGTERM_MS = Number(process.env.RETRY_GRACE_SIGTERM_MS || 3000);
 
 const TIMEOUT_CONEXAO_MS = Number(process.env.CONEXAO_TIMEOUT_MS || 30000);
-
-// Pausa após a conexão abrir, antes do primeiro envio.
 const ESPERA_APOS_CONECTAR_MS = Number(process.env.ESPERA_APOS_CONECTAR_MS || 3000);
 
-// 'silent' escondia inclusive os avisos de ack com erro e de reenvio não atendido, que são
-// exatamente os sintomas que precisam aparecer nos logs do Fly quando algo dá errado.
-const NIVEL_LOG = process.env.BAILEYS_LOG_LEVEL || 'warn';
+// ── Sessões de sinal forçadas antes do envio ─────────────────────────────────
+// Desligado por padrão. Ver o comentário em garantirSessoesFrescas para o porquê.
+const FORCAR_SESSOES = process.env.FORCAR_SESSOES === '1';
+const LOTE_SESSOES = Number(process.env.LOTE_SESSOES || 50);
+// Teto para a medição e a recriação de sessões. Nada disso pode atrasar o link do culto:
+// é remediação, e o link é a razão de o bot existir.
+const PRAZO_PREPARO_MS = Number(process.env.PREPARO_TIMEOUT_MS || 45000);
 
 const esperar = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Corre a promessa com prazo. Não cancela o trabalho em si (não dá, é rede), só para de
+// esperar por ele.
+function comPrazo(promessa, ms, oQue) {
+  let relogio;
+  const prazo = new Promise((_, rejeitar) => {
+    relogio = setTimeout(() => rejeitar(new Error(`${oQue} passou de ${Math.round(ms / 1000)}s`)), ms);
+  });
+  return Promise.race([promessa, prazo]).finally(() => clearTimeout(relogio));
+}
 
 // Sessão única por execução. Antes cada mensagem abria e fechava o próprio socket, o que
 // refazia as sessões de sinal do zero a cada envio e desperdiçava a janela de reenvio.
@@ -38,7 +56,7 @@ function opcoesSocket(version, state, aoReenviar = () => {}) {
   return {
     version,
     auth: state,
-    logger: pino({ level: NIVEL_LOG }),
+    logger: diagnostico.logger(),
     printQRInTerminal: false,
     browser: ['Culto Bot', 'Chrome', '1.0'],
     // Continua false de propósito: é o que impede o WhatsApp de marcar a conta como online
@@ -50,7 +68,7 @@ function opcoesSocket(version, state, aoReenviar = () => {}) {
     getMessage: async (chave) => {
       const achada = await mensagens.buscar(chave?.id);
       if (achada) {
-        aoReenviar();
+        aoReenviar(chave.id);
         console.log(`[WhatsApp] ♻️  Reenviando mensagem ${chave.id} a pedido de um aparelho que não conseguiu abrir.`);
         return achada;
       }
@@ -65,16 +83,56 @@ function opcoesSocket(version, state, aoReenviar = () => {}) {
   };
 }
 
-// O useMultiFileAuthState grava as chaves de sinal em disco de forma assíncrona, e o Baileys
-// nem sempre espera essa gravação terminar. Como o processo chama process.exit logo depois
-// e o Fly desmonta o volume, uma gravação perdida deixa o ratchet do remetente defasado, e
-// aí a PRÓXIMA mensagem já nasce impossível de descriptografar. Este wrapper permite esperar
-// tudo drenar antes de sair.
+/**
+ * Embrulha o armazenamento de chaves por dois motivos independentes.
+ *
+ * 1. GRAVAÇÕES EM VOO. O useMultiFileAuthState grava o estado de sinal de forma assíncrona e
+ *    o Baileys nem sempre espera terminar. Como o processo chama process.exit logo depois e o
+ *    Fly desmonta o volume, uma gravação perdida deixa o ratchet defasado e a PRÓXIMA
+ *    mensagem já nasce impossível de descriptografar. O drenar espera tudo antes de sair.
+ *
+ * 2. MEMÓRIA DE DISTRIBUIÇÃO DA CHAVE DE GRUPO. Esta é a correção do domingo 02/08.
+ *    Em grupo, o remetente distribui uma "sender key" para cada aparelho e o Baileys anota em
+ *    sender-key-memory-<grupo>.json quem já recebeu. O problema está na ordem em que ele faz
+ *    isso (messages-send.js, ramo de grupo do relayMessage):
+ *
+ *        senderKeyRecipients.push(deviceJid);
+ *        senderKeyMap[deviceJid] = true;        // marca ANTES de tentar
+ *        ...
+ *        await assertSessions(senderKeySessionTargets);
+ *        const result = await createParticipantNodes(senderKeyRecipients, ...);
+ *        ...
+ *        await authState.keys.set({ 'sender-key-memory': { [jid]: senderKeyMap } });  // grava sempre
+ *
+ *    O aparelho é marcado como "já recebeu" antes de a criptografia acontecer, e o mapa é
+ *    gravado no disco mesmo que ela falhe. E a falha por destinatário é engolida: o
+ *    createParticipantNodes faz catch, loga e devolve null, e só lança se TODAS falharem.
+ *
+ *    O efeito prático foi medido no volume. Domingo de manhã a limpeza única esvaziou o mapa,
+ *    os 845 aparelhos entraram na distribuição e todos foram marcados como atendidos. À noite
+ *    o mapa foi lido com 845 entradas verdadeiras, a lista de destinatários da chave ficou
+ *    VAZIA, e a mensagem das 18:59 saiu sem distribuir chave para ninguém. Quem falhou de
+ *    manhã estava condenado a falhar de novo à noite.
+ *
+ *    Em toda a biblioteca existe um único ponto que limpa esse mapa (messages-recv.js, dentro
+ *    do tratamento do pedido de reenvio), e ele exige socket vivo. Sem isso, o bloqueio é
+ *    permanente.
+ *
+ *    A saída é não confiar no mapa: a leitura devolve sempre vazio e a gravação é descartada.
+ *    Assim todo envio redistribui a chave para todos os aparelhos, e quem ficou de fora numa
+ *    semana ganha nova chance na semana seguinte. Não é gambiarra: é o que a própria
+ *    biblioteca faz ao atender um pedido de reenvio, zerando o mapa do grupo inteiro.
+ */
 function rastrearGravacoes(state, saveCreds) {
   const pendentes = new Set();
+  let falhasGravacao = 0;
 
   const acompanhar = (promessa) => {
     const p = Promise.resolve(promessa).catch(err => {
+      // Não repropaga: o Baileys chama keys.set sem await em vários pontos, e uma rejeição
+      // aqui viraria unhandled rejection no meio do envio. O contador vai para o resumo e
+      // muda o código de saída do processo, que é como isto fica visível.
+      falhasGravacao++;
       console.error('[WhatsApp] Falha ao gravar estado de sinal:', err.message);
     });
     pendentes.add(p);
@@ -82,8 +140,22 @@ function rastrearGravacoes(state, saveCreds) {
     return p;
   };
 
+  const getOriginal = state.keys.get.bind(state.keys);
   const setOriginal = state.keys.set.bind(state.keys);
-  state.keys.set = (dados) => acompanhar(setOriginal(dados));
+
+  state.keys.get = async (tipo, ids) => {
+    if (tipo === 'sender-key-memory') return {};
+    return getOriginal(tipo, ids);
+  };
+
+  state.keys.set = (dados) => {
+    if (dados && 'sender-key-memory' in dados) {
+      dados = { ...dados };
+      delete dados['sender-key-memory'];
+      if (Object.keys(dados).length === 0) return Promise.resolve();
+    }
+    return acompanhar(setOriginal(dados));
+  };
 
   const salvarCreds = () => acompanhar(saveCreds());
 
@@ -96,43 +168,87 @@ function rastrearGravacoes(state, saveCreds) {
     }
   };
 
-  return { salvarCreds, drenar };
+  return { salvarCreds, drenar, contarFalhas: () => falhasGravacao };
 }
 
-// Em grupo, o WhatsApp criptografa com uma "sender key" que o remetente precisa distribuir
-// uma vez para cada aparelho. O Baileys guarda em disco quem já recebeu, no arquivo
-// sender-key-memory-<grupo>.json, e só distribui para quem ainda não está lá.
-//
-// O problema: em toda a biblioteca existe UM único ponto que limpa essa memória, o
-// messages-recv.js:1136, e ele fica dentro do tratamento do pedido de reenvio. Como o bot
-// morria antes de processar qualquer reenvio, essa memória nunca era limpa. Quem perdeu a
-// chave depois de recebê-la (trocou de aparelho, reinstalou o WhatsApp, restaurou backup)
-// continuava marcado como "já recebeu" no volume e nunca mais recebia a chave de novo.
-//
-// Essa limpeza roda uma vez só, marcada por um arquivo. Apagar não perde nada: é um cache
-// de "para quem eu já avisei". O próximo envio simplesmente redistribui a chave para todos.
-const MARCA_REDISTRIBUICAO = path.join(AUTH_DIR, '.chaves-redistribuidas');
-
-async function redistribuirChavesUmaVez() {
-  try {
-    await access(MARCA_REDISTRIBUICAO);
-    return;
-  } catch { /* ainda não foi feito */ }
-
+// Remove os arquivos de memória de distribuição que ficaram no volume. Depois da correção
+// acima nada mais os lê nem os escreve, então são só lixo enganoso de versões anteriores.
+// A marca .chaves-redistribuidas também sai: ela documentava uma limpeza única que virou
+// permanente, e deixá-la lá sugeriria que ainda existe algo condicionado a ela.
+async function limparMemoriaDeChave() {
   try {
     const arquivos = await readdir(AUTH_DIR);
-    const memorias = arquivos.filter(a => a.startsWith('sender-key-memory-'));
-    for (const arquivo of memorias) {
-      await unlink(path.join(AUTH_DIR, arquivo));
+    const alvos = arquivos.filter(a => a.startsWith('sender-key-memory-') || a === '.chaves-redistribuidas');
+    for (const arquivo of alvos) {
+      await unlink(path.join(AUTH_DIR, arquivo)).catch(() => {});
     }
-    await writeFile(MARCA_REDISTRIBUICAO, new Date().toISOString());
-    if (memorias.length > 0) {
-      console.log(`[WhatsApp] 🔑 Limpei ${memorias.length} registro(s) de distribuição de chave de grupo. O próximo envio redistribui a chave para todos os aparelhos.`);
+    if (alvos.length > 0) {
+      console.log(`[WhatsApp] 🔑 Removi ${alvos.length} arquivo(s) de memória de distribuição de chave. Todo envio agora redistribui a chave para todos os aparelhos.`);
     }
   } catch (err) {
-    // Falhar aqui não pode impedir o envio do link do culto. Fica para a próxima execução.
+    // Falhar aqui não pode impedir o envio do link do culto.
     console.warn('[WhatsApp] Não consegui limpar a memória de distribuição de chaves:', err.message);
   }
+}
+
+/**
+ * Mede o grupo e, opcionalmente, recria as sessões de sinal antes do envio.
+ *
+ * A parte de MEDIÇÃO roda sempre e é só leitura: compara quantas pessoas o grupo tem com
+ * quantos aparelhos o WhatsApp devolve. É o número que faltava para saber se existe gente
+ * que nunca chega a entrar na distribuição da chave.
+ *
+ * A parte de FORÇAR sessões está atrás de FORCAR_SESSOES=1 e desligada por padrão. Ela ataca
+ * a hipótese de sessão obsoleta: quando alguém reinstala o WhatsApp, troca de aparelho ou
+ * restaura backup, o Signal do lado da pessoa é destruído mas o session-<jid>.json do bot
+ * continua intacto no volume. O assertSessions do fan-out da chave de grupo é chamado sem o
+ * segundo argumento, então força é falso, e aí ele consulta validateSession, que é puramente
+ * local (carrega do disco e chama haveOpenSession). Não tem como saber que o outro lado
+ * apagou a sessão dele. O resultado é a chave de grupo cifrada dentro de uma sessão morta:
+ * a pessoa recebe bytes que não consegue abrir, e nada disso lança erro.
+ *
+ * Com força verdadeira o Baileys pula essa validação local e pede um pacote de chaves novo,
+ * recriando a sessão do zero. Está desligado por padrão porque é a mudança menos medida da
+ * série: descarta o ratchet de centenas de sessões e consome uma chave de uso único de cada
+ * pessoa a cada envio. Os lotes têm try/catch individual, então isto nunca derruba o envio,
+ * no máximo deixa de consertar um lote.
+ */
+async function garantirSessoesFrescas(s, chatId) {
+  if (s.medido) return;
+  s.medido = true;
+  try {
+    await comPrazo(prepararGrupo(s, chatId), PRAZO_PREPARO_MS, 'preparo do grupo');
+  } catch (err) {
+    // Diagnóstico e remediação são acessórios: o link do culto tem que sair de qualquer jeito.
+    console.warn('[WhatsApp] Preparo do grupo não completou:', err.message);
+  }
+}
+
+async function prepararGrupo(s, chatId) {
+  const meta = await s.sock.groupMetadata(chatId);
+  const participantes = meta?.participants?.length || 0;
+  const aparelhos = await s.sock.getUSyncDevices(meta.participants.map(p => p.id), false, false);
+  const jids = [...new Set(aparelhos.map(d => d.jid).filter(Boolean))];
+
+  s.grupo = { participantes, aparelhos: jids.length, sessoesForcadas: 0, lotesComFalha: 0 };
+  console.log(`[WhatsApp] 👥 Grupo com ${participantes} pessoa(s) e ${jids.length} aparelho(s).`);
+
+  if (!FORCAR_SESSOES) return;
+
+  for (let i = 0; i < jids.length; i += LOTE_SESSOES) {
+    const lote = jids.slice(i, i + LOTE_SESSOES);
+    try {
+      await s.sock.assertSessions(lote, true);
+      s.grupo.sessoesForcadas += lote.length;
+    } catch (err) {
+      // Um único aparelho com erro derruba o lote inteiro, porque o Baileys valida todos os
+      // nós da resposta antes de injetar qualquer sessão. Por isso o fatiamento: limita o
+      // estrago a LOTE_SESSOES aparelhos em vez de todos.
+      s.grupo.lotesComFalha++;
+      console.warn(`[WhatsApp] Lote de ${lote.length} sessão(ões) falhou: ${err.message}`);
+    }
+  }
+  console.log(`[WhatsApp] 🔄 Sessões recriadas para ${s.grupo.sessoesForcadas}/${jids.length} aparelho(s).`);
 }
 
 async function abrirSessao() {
@@ -144,14 +260,35 @@ async function abrirSessao() {
     throw new Error('WhatsApp não pareado. Execute o bot para gerar o QR Code.');
   }
 
-  await redistribuirChavesUmaVez();
+  await limparMemoriaDeChave();
 
   const { version } = await fetchLatestBaileysVersion();
-  const { salvarCreds, drenar } = rastrearGravacoes(state, saveCreds);
+  const { salvarCreds, drenar, contarFalhas } = rastrearGravacoes(state, saveCreds);
 
   return new Promise((resolve, reject) => {
-    const nova = { sock: null, drenar, viva: false, enviadas: [], reenvios: 0, confirmacoes: new Set() };
-    const sock = makeWASocket(opcoesSocket(version, state, () => { nova.reenvios++; }));
+    const nova = {
+      sock: null,
+      drenar,
+      contarFalhas,
+      viva: false,
+      medido: false,
+      grupo: null,
+      enviadas: [],
+      envios: [],
+      reenvios: 0,
+      reenviados: [],
+      confirmacoes: new Set(),
+      ultimaAtividade: 0,
+      conectadoEm: null,
+    };
+
+    const registrarReenvio = (id) => {
+      nova.reenvios++;
+      nova.reenviados.push(id);
+      nova.ultimaAtividade = Date.now();
+    };
+
+    const sock = makeWASocket(opcoesSocket(version, state, registrarReenvio));
     nova.sock = sock;
 
     let concluido = false;
@@ -176,7 +313,8 @@ async function abrirSessao() {
     sock.ev.on('creds.update', salvarCreds);
 
     // Em grupo o Baileys não emite messages.update por participante; emite este evento.
-    // Contar as confirmações dá uma noção real de quantos aparelhos abriram a mensagem.
+    // Serve para saber quantos aparelhos confirmaram entrega, mas atenção: ele NÃO dispara
+    // para receipt do tipo retry, então não serve como sinal de atividade da janela.
     sock.ev.on('message-receipt.update', (eventos) => {
       for (const e of eventos) {
         if (nova.enviadas.includes(e.key?.id) && e.receipt?.userJid) {
@@ -188,6 +326,7 @@ async function abrirSessao() {
     sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
       if (connection === 'open') {
         nova.viva = true;
+        nova.conectadoEm = new Date().toISOString();
         // Para o relógio aqui, e não só no finalizar: a conexão já abriu, seria injusto
         // o timeout derrubar tudo por causa da pausa de acomodação logo abaixo.
         clearTimeout(prazo);
@@ -226,9 +365,34 @@ async function abrirSessao() {
   });
 }
 
+/**
+ * Abre a conexão sem enviar nada.
+ *
+ * Chamado na subida do processo, e não só na hora do envio. A máquina liga cerca de cinco
+ * minutos antes do culto, e esse tempo era desperdiçado com o socket fechado. Conectando
+ * cedo, a fila de pedidos de reenvio que o WhatsApp acumulou durante a semana é entregue e
+ * atendida com o socket ocioso, antes do envio do dia. Cada pedido atendido também faz o
+ * Baileys recriar a sessão daquele aparelho, o que conserta gente que estava travada desde
+ * o domingo anterior.
+ */
+async function conectar() {
+  try {
+    await abrirSessao();
+    return true;
+  } catch (err) {
+    // Não é fatal: o envio abre a conexão de novo quando chegar a hora.
+    console.warn('[WhatsApp] Não consegui conectar na subida:', err.message);
+    return false;
+  }
+}
+
 // Envia e devolve o id da mensagem. Não desconecta: quem fecha é o encerrarSessao.
 async function enviarMensagem(chatId, mensagem) {
   const s = await abrirSessao();
+
+  if (chatId.endsWith('@g.us')) {
+    await garantirSessoesFrescas(s, chatId);
+  }
 
   const enviada = await s.sock.sendMessage(chatId, { text: mensagem });
   const id = enviada?.key?.id;
@@ -240,6 +404,8 @@ async function enviarMensagem(chatId, mensagem) {
   // o histórico já precisa estar no disco.
   await mensagens.guardar(id, enviada.message);
   s.enviadas.push(id);
+  s.envios.push({ id, em: new Date().toISOString() });
+  s.ultimaAtividade = Date.now();
 
   console.log(`✅ Mensagem enviada para ${chatId} (id ${id})`);
   return id;
@@ -249,6 +415,7 @@ async function enviarMensagem(chatId, mensagem) {
 // achar que não há nada a fazer.
 let encerramento = null;
 let cortarEspera = null;
+let cortado = false;
 
 // Espera que um segundo pedido consegue interromper. É o que deixa o SIGTERM pular o resto
 // da janela de reenvio sem pular o fechamento do socket e a drenagem das gravações.
@@ -259,12 +426,35 @@ function esperarCortavel(ms) {
   });
 }
 
-async function fecharSessao(s, graca) {
-  if (s.enviadas.length > 0 && graca > 0) {
-    const prazo = graca >= 1000 ? `${Math.round(graca / 1000)}s` : `${graca}ms`;
-    console.log(`[WhatsApp] ⏳ Mantendo a conexão por ${prazo} para atender pedidos de reenvio...`);
-    await esperarCortavel(graca);
-    console.log(`[WhatsApp] 📬 ${s.confirmacoes.size} aparelho(s) confirmaram entrega; ${s.reenvios} reenvio(s) atendido(s).`);
+/**
+ * Segura a conexão pela janela de reenvio.
+ *
+ * Espera pelo menos o piso, depois continua enquanto houver pedidos de reenvio chegando, e
+ * corta no teto. Encerrar por relógio fixo no meio da fila abandona a cauda de pedidos sem
+ * sequer confirmar o recebimento deles, e essa mesma cauda é abandonada toda semana.
+ */
+async function aguardarReenvios(s, piso) {
+  const inicio = Date.now();
+  const teto = Math.max(piso, GRACA_MAXIMA_MS);
+
+  while (!cortado) {
+    const decorrido = Date.now() - inicio;
+    if (decorrido >= teto) break;
+    if (decorrido >= piso && Date.now() - s.ultimaAtividade >= GRACA_QUIETUDE_MS) break;
+    await esperarCortavel(Math.min(PASSO_ESPERA_MS, teto - decorrido));
+  }
+
+  return Date.now() - inicio;
+}
+
+async function fecharSessao(s, piso) {
+  let esperou = 0;
+
+  if (s.enviadas.length > 0 && piso > 0) {
+    const prazo = piso >= 1000 ? `${Math.round(piso / 1000)}s` : `${piso}ms`;
+    console.log(`[WhatsApp] ⏳ Mantendo a conexão por pelo menos ${prazo} para atender pedidos de reenvio...`);
+    esperou = await aguardarReenvios(s, piso);
+    console.log(`[WhatsApp] 📬 ${s.confirmacoes.size} aparelho(s) confirmaram entrega; ${s.reenvios} reenvio(s) atendido(s) em ${Math.round(esperou / 1000)}s.`);
   }
 
   // O end() do Baileys é async: fecha o websocket, percorre os handlers de fim e só então
@@ -272,15 +462,33 @@ async function fecharSessao(s, graca) {
   // disso e uma rejeição escaparia como unhandled rejection.
   try { await s.sock.end(undefined); } catch { /* socket já morto */ }
   await s.drenar();
+
+  const resumo = {
+    conectadoEm: s.conectadoEm,
+    encerradoEm: new Date().toISOString(),
+    esperaDeReenvioMs: esperou,
+    envios: s.envios,
+    grupo: s.grupo,
+    confirmacoes: { total: s.confirmacoes.size, jids: [...s.confirmacoes] },
+    reenviosAtendidos: { total: s.reenvios, ids: s.reenviados },
+    falhasDeGravacao: s.contarFalhas(),
+  };
+  const arquivo = diagnostico.gravarResumo(resumo);
+  if (arquivo) console.log(`[WhatsApp] 📝 Resumo da janela em ${arquivo}`);
+
   console.log('[WhatsApp] 📵 Desconectado.');
+  diagnostico.encerrar();
+
+  return resumo;
 }
 
-async function encerrarSessao({ graca = GRACA_REENVIO_MS } = {}) {
+async function encerrarSessao({ graca = GRACA_MINIMA_MS } = {}) {
   // Um segundo pedido durante o primeiro é o SIGTERM chegando no meio da janela de reenvio.
   // Sem este ramo ele veria `sessao` já nula, voltaria na hora, e o process.exit de quem
   // chamou mataria o processo com o socket aberto e gravações em voo. Ou seja: alongar a
-  // janela para 2 min só é seguro junto com isto.
+  // janela só é seguro junto com isto.
   if (encerramento) {
+    cortado = true;
     if (cortarEspera) cortarEspera();
     return encerramento;
   }
@@ -289,11 +497,13 @@ async function encerrarSessao({ graca = GRACA_REENVIO_MS } = {}) {
   if (!s) return;
   sessao = null;
 
+  cortado = false;
   encerramento = fecharSessao(s, graca);
   try {
-    await encerramento;
+    return await encerramento;
   } finally {
     encerramento = null;
+    cortado = false;
   }
 }
 
@@ -304,7 +514,6 @@ async function iniciarCliente() {
 
   if (state.creds.me) {
     console.log(`✅ Credenciais encontradas para ${state.creds.me.name}. Bot pronto.`);
-    console.log('📵 Só conecta na hora de enviar, para não suprimir notificações do celular.');
     return;
   }
 
@@ -365,10 +574,14 @@ async function listarTodosChats() {
   return Object.entries(grupos).map(([id, info]) => ({ id, nome: info.subject }));
 }
 
-function estaConectado() { return true; } // sempre "pronto" : conecta no momento do envio
+// Sempre "pronto": a conexão é preguiçosa e abre no momento do envio. Não inverta isto para
+// checar a sessão de verdade. Na primeira tentativa do scheduler a sessão ainda é nula, o
+// envio nunca seria chamado, a conexão nunca abriria, e nenhum link sairia.
+function estaConectado() { return true; }
 
 module.exports = {
   iniciarCliente,
+  conectar,
   enviarMensagem,
   encerrarSessao,
   estaConectado,
