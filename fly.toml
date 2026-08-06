@@ -13,3 +13,9 @@ primary_region = "iad"
 
 [[restart]]
   policy = "never"
+
+# O padrão do Fly são 5s entre o SIGTERM e o SIGKILL, e o nosso encerramento não cabe nisso:
+# ele ainda segura um pouco a janela de reenvio, fecha o socket e espera as gravações de
+# estado de sinal drenarem. Já aconteceu de o processo ser morto no meio da drenagem, e o
+# resumo de diagnóstico da execução mais importante se perder junto.
+kill_timeout = "45s"

@@ -89,6 +89,16 @@ function criarSocketFalso(opcoes) {
     // O end() do Baileys é async e leva um tempo real. Se o whatsapp.js não aguardar,
     // o encerrarSessao volta com o socket ainda aberto, e o teste pega isso.
     end: async () => {
+      // O resumo precisa já refletir ESTA sessão AQUI. Ele era gravado depois do end e da
+      // drenagem, e o Fly matou o processo no meio da drenagem justamente na execução mais
+      // interessante, levando o diagnóstico junto. Comparar por id, e não por existência do
+      // arquivo: o nome do resumo é o mesmo para o processo inteiro, então um cenário
+      // anterior já teria deixado um arquivo lá e a checagem passaria à toa.
+      sock.resumoNoEnd = null;
+      try {
+        const nome = fs.readdirSync(process.env.DIAG_DIR).find(a => a.startsWith('resumo-'));
+        if (nome) sock.resumoNoEnd = JSON.parse(fs.readFileSync(path.join(process.env.DIAG_DIR, nome), 'utf-8'));
+      } catch { /* ainda não existe */ }
       await new Promise(r => setTimeout(r, 60));
       sock.encerrado = true;
     },
@@ -430,6 +440,11 @@ async function main() {
     checar('resumo da janela devolvido', !!resumo && Array.isArray(resumo.envios) && resumo.envios.length === 1);
     checar('resumo registra o grupo medido', !!resumo?.grupo && resumo.grupo.participantes === PARTICIPANTES.length);
     checar('resumo gravado em disco', fs.readdirSync(process.env.DIAG_DIR).some(a => a.startsWith('resumo-')));
+    checar(
+      'resumo desta sessão já estava no disco antes de fechar o socket',
+      sock.resumoNoEnd?.envios?.[0]?.id === sock.enviadas[0].id,
+      `→ resumo tinha ${sock.resumoNoEnd?.envios?.[0]?.id || 'nada'}, sessão enviou ${sock.enviadas[0].id}`
+    );
     console.log('');
   }
 

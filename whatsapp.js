@@ -546,13 +546,7 @@ async function fecharSessao(s, piso) {
     console.log(`[WhatsApp] 🧹 ${s.ignorados} nó(s) de outras conversas descartados sem entrar na fila.`);
   }
 
-  // O end() do Baileys é async: fecha o websocket, percorre os handlers de fim e só então
-  // emite o connection.update de fechamento. Sem await, o drenar abaixo correria antes
-  // disso e uma rejeição escaparia como unhandled rejection.
-  try { await s.sock.end(undefined); } catch { /* socket já morto */ }
-  await s.drenar();
-
-  const resumo = {
+  const montarResumo = () => ({
     conectadoEm: s.conectadoEm,
     encerradoEm: new Date().toISOString(),
     esperaDeReenvioMs: esperou,
@@ -564,7 +558,21 @@ async function fecharSessao(s, piso) {
     // a fila levava a janela inteira para drenar e os pedidos de reenvio nunca eram lidos.
     nosIgnorados: s.ignorados,
     falhasDeGravacao: s.contarFalhas(),
-  };
+  });
+
+  // Grava ANTES de fechar e drenar. O drenar pode demorar quando a janela atendeu muitos
+  // pedidos de reenvio, e o Fly mata o processo alguns segundos depois do SIGTERM: já
+  // aconteceu de o resumo se perder exatamente na execução mais interessante de todas.
+  // Depois da drenagem ele é regravado com os números finais.
+  diagnostico.gravarResumo(montarResumo());
+
+  // O end() do Baileys é async: fecha o websocket, percorre os handlers de fim e só então
+  // emite o connection.update de fechamento. Sem await, o drenar abaixo correria antes
+  // disso e uma rejeição escaparia como unhandled rejection.
+  try { await s.sock.end(undefined); } catch { /* socket já morto */ }
+  await s.drenar();
+
+  const resumo = montarResumo();
   const arquivo = diagnostico.gravarResumo(resumo);
   if (arquivo) console.log(`[WhatsApp] 📝 Resumo da janela em ${arquivo}`);
 
