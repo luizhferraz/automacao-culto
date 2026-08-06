@@ -58,31 +58,71 @@ chave para ninguém. Quem falhou de manhã estava condenado a falhar de novo à 
 único ponto da biblioteca que limpa esse mapa fica dentro do tratamento do pedido de reenvio,
 e isso exige socket vivo, o bloqueio era permanente.
 
-Quatro defesas:
+### A causa raiz: a fila de entrada entupida
 
-1. **A memória de distribuição é ignorada.** A leitura devolve sempre vazio e a gravação é
+Tudo acima é verdade, e mesmo assim não era o principal. O bot é um **aparelho vinculado à
+conta pessoal**, então recebe toda a conversa do dono, não só o grupo de avisos. Como fica
+offline quase a semana inteira, o WhatsApp acumula esse tráfego e despeja tudo de uma vez na
+reconexão. Medido no log da quarta 05/08:
+
+| | |
+|---|---|
+| Mensagens indecifráveis processadas | 2887, **todas de outros grupos** (zero do grupo de avisos) |
+| Vazão | **7 nós por segundo** (cada falha custa transação, rollback e disco) |
+| Última processada | 22:56:03, **o instante exato em que o socket fechou** |
+
+Ou seja: a janela inteira de reenvio foi gasta processando mensagem de grupo que não
+interessa, e o processador de nós offline abandona em silêncio o que sobrou quando o
+websocket fecha (`while (nodes.length && deps.isWsOpen())`).
+
+O pedido de reenvio do grupo de avisos estava nessa fila e **nunca chegou a ser lido**. É por
+isso que o resumo daquela janela registrou zero reenvios atendidos e zero confirmações de
+entrega: não é que ninguém pediu, é que o bot nunca chegou lá. E como o único ponto da
+biblioteca que limpa a memória de distribuição de chave fica dentro desse tratamento, ele
+nunca rodou nem uma vez na vida deste bot.
+
+O `getMessage`, o histórico em disco e a janela elástica estavam corretos, e todos inúteis,
+porque a fila nunca chegava neles.
+
+Cinco defesas:
+
+1. **Filtro de ruído (`shouldIgnoreJid`).** Tudo que não é o grupo de avisos é descartado com
+   ack **antes de entrar na fila**, sem nem tentar descriptografar. A fila passa a conter só
+   o que interessa e drena em segundos, então os pedidos de reenvio chegam ao tratamento e o
+   ciclo de autocorreção da biblioteca finalmente roda. Conversa individual continua passando,
+   por segurança; o volume mora nos grupos. Se `WHATSAPP_GROUP_NAME` não estiver definido o
+   filtro se desliga sozinho, porque sem saber qual é o grupo ele descartaria o alvo junto.
+2. **A memória de distribuição é ignorada.** A leitura devolve sempre vazio e a gravação é
    descartada, então **todo envio redistribui a chave para todos os aparelhos**. Quem ficou de
    fora numa semana ganha nova chance na semana seguinte. Não é gambiarra: é o que a própria
    biblioteca faz ao atender um pedido de reenvio, zerando o mapa do grupo inteiro.
-2. **Histórico em disco.** Toda mensagem enviada é gravada em `$AUTH_DIR/mensagens-enviadas.json`
+3. **Histórico em disco.** Toda mensagem enviada é gravada em `$AUTH_DIR/mensagens-enviadas.json`
    (últimas 200, validade de 30 dias). Se o pedido de reenvio só chegar dias depois, porque o
    celular estava desligado, o WhatsApp o entrega na próxima conexão do bot, e aí ele consegue
    reenviar mesmo tendo sido outra execução do processo.
-3. **Conexão na subida.** O socket abre quando o processo sobe, não na hora do envio. Assim os
+4. **Conexão na subida.** O socket abre quando o processo sobe, não na hora do envio. Assim os
    ~5 min entre ligar a máquina e o culto servem para drenar a fila de pedidos que o WhatsApp
    acumulou durante a semana, com a conexão ociosa. Cada pedido atendido faz o Baileys recriar
    a sessão daquele aparelho, o que conserta gente travada desde o culto anterior.
-4. **Janela de reenvio elástica.** Depois do último envio a conexão fica aberta por pelo menos
+5. **Janela de reenvio elástica.** Depois do último envio a conexão fica aberta por pelo menos
    `RETRY_GRACE_MS`, e continua aberta enquanto chegarem pedidos, até o teto de
    `RETRY_GRACE_MAX_MS`. Relógio fixo era a coisa errada: o Baileys abandona em silêncio o que
    sobrou na fila assim que o websocket fecha, então encerrar no meio da fila jogava fora
    exatamente os pedidos que se queria atender.
 
-Existe ainda uma quinta defesa: `FORCAR_SESSOES=1` recria as sessões de sinal em lote **na
-subida**, nos minutos ociosos antes do culto. Ela ataca o caso de quem reinstalou o WhatsApp
-ou trocou de aparelho, porque nesse cenário a sessão do lado da pessoa foi destruída mas o
-arquivo do bot continua intacto no volume, e a validação que o Baileys faz antes de distribuir
-a chave é puramente local: não tem como saber que o outro lado apagou a sessão dele.
+Existe ainda uma sexta defesa, **desligada por padrão**: `FORCAR_SESSOES=1` recria as sessões
+de sinal em lote **na subida**, nos minutos ociosos antes do culto. Ela ataca o caso de quem
+reinstalou o WhatsApp ou trocou de aparelho, porque nesse cenário a sessão do lado da pessoa
+foi destruída mas o arquivo do bot continua intacto no volume, e a validação que o Baileys faz
+antes de distribuir a chave é puramente local: não tem como saber que o outro lado apagou a
+sessão dele.
+
+Ela foi ligada uma vez, na quarta 05/08, e o quadro **piorou**: gente que recebia normalmente
+passou a não receber. O log mostra que ela fez exatamente o que prometia (860 sessões
+recriadas, 18 lotes, zero falha), o que reforça que o problema estava na fila de entrada e não
+nas sessões. Está desligada de novo. Com o filtro de ruído no lugar, a recriação de sessão
+passa a acontecer sozinha e de forma **dirigida**: cada pedido de reenvio atendido faz o
+Baileys recriar a sessão daquele aparelho específico. Só volte a ligá-la com evidência nova.
 
 Não dá para ser cirúrgico aqui. Sessão obsoleta é, por construção, invisível do lado do bot:
 não existe log, erro ou sinal que aponte quem está nessa situação. Ou se recria tudo, ou não

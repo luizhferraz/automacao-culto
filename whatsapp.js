@@ -1,4 +1,12 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  isJidGroup,
+  isJidStatusBroadcast,
+  isJidNewsletter,
+} = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const path = require('path');
 const { readdir, unlink } = require('fs/promises');
@@ -7,6 +15,10 @@ const mensagens = require('./mensagens-enviadas');
 const diagnostico = require('./diagnostico');
 
 const AUTH_DIR = process.env.AUTH_DIR || '.baileys_auth';
+
+// O grupo de avisos. É a única conversa que este bot precisa enxergar, e saber disso é o que
+// torna possível o filtro de ruído logo abaixo.
+const GRUPO_ALVO = process.env.WHATSAPP_GROUP_NAME || '';
 
 // ── Janela de reenvio ────────────────────────────────────────────────────────
 // Quando o aparelho de alguém não consegue descriptografar, ele manda de volta um pedido de
@@ -54,8 +66,58 @@ function comPrazo(promessa, ms, oQue) {
 // refazia as sessões de sinal do zero a cada envio e desperdiçava a janela de reenvio.
 let sessao = null;
 
-function opcoesSocket(version, state, aoReenviar = () => {}) {
+/**
+ * Descarta o tráfego que não é do grupo de avisos, antes de ele entrar na fila.
+ *
+ * ESTA É A CORREÇÃO CENTRAL, e ela explica por que nenhuma das anteriores funcionou.
+ *
+ * O bot é um aparelho vinculado à conta pessoal do Luiz, então recebe TODA a conversa dele,
+ * não só o grupo de avisos. Como fica offline quase a semana inteira, o WhatsApp acumula
+ * isso e despeja tudo de uma vez na reconexão. Medido no log da quarta 05/08:
+ *
+ *   2887 mensagens indecifráveis, TODAS de outros grupos (zero do grupo de avisos)
+ *   vazão de 7 nós por segundo, porque cada falha custa transação, rollback e disco
+ *   a fila ainda estava drenando às 22:56:03, o instante exato em que o socket fechou
+ *
+ * Ou seja: os 2 minutos de janela de reenvio foram gastos inteiros processando mensagem de
+ * grupo que não interessa. E o processador de nós offline abandona em silêncio o que sobrou
+ * quando o websocket fecha (`while (nodes.length && deps.isWsOpen())`).
+ *
+ * O pedido de reenvio do nosso grupo estava nessa fila e nunca chegou a ser lido. Por isso
+ * o resumo daquela janela registrou zero reenvios atendidos e zero confirmações de entrega:
+ * não é que ninguém pediu, é que o bot nunca chegou lá. E como o ÚNICO ponto da biblioteca
+ * que limpa a memória de distribuição de chave fica dentro desse tratamento, ele nunca rodou
+ * nem uma vez em toda a vida deste bot.
+ *
+ * O getMessage, o histórico em disco e a janela elástica estavam corretos, e todos inúteis,
+ * porque a fila nunca chegava neles.
+ *
+ * O Baileys filtra por este callback em processNode, ANTES de enfileirar, e ainda manda o ack
+ * para o servidor não reenviar depois. Um pedido de reenvio de grupo chega com `from` sendo o
+ * jid do grupo, então o nosso passa e os outros não.
+ */
+function criarFiltroDeRuido(aoIgnorar = () => {}) {
+  // Sem grupo configurado não dá para saber o que é ruído, e filtrar por engano descartaria
+  // justamente os pedidos de reenvio do grupo de avisos. Na dúvida, não filtra nada.
+  if (!GRUPO_ALVO) {
+    console.warn('[WhatsApp] WHATSAPP_GROUP_NAME não definido: o filtro de ruído fica desligado.');
+    return () => false;
+  }
+
+  return (jid) => {
+    if (!jid || jid === GRUPO_ALVO) return false;
+    // Conservador de propósito: só descarta conversa de muitos participantes, que é onde o
+    // volume mora. Conversa individual continua passando, custa pouco e evita surpresa com
+    // algum nó de protocolo que chegue por um jid inesperado.
+    const ruido = !!isJidGroup(jid) || !!isJidStatusBroadcast(jid) || !!isJidNewsletter(jid);
+    if (ruido) aoIgnorar();
+    return ruido;
+  };
+}
+
+function opcoesSocket(version, state, aoReenviar = () => {}, aoIgnorar = () => {}) {
   return {
+    shouldIgnoreJid: criarFiltroDeRuido(aoIgnorar),
     version,
     auth: state,
     logger: diagnostico.logger(),
@@ -295,6 +357,7 @@ async function abrirSessao() {
       reenvios: 0,
       reenviados: [],
       confirmacoes: new Set(),
+      ignorados: 0,
       ultimaAtividade: 0,
       conectadoEm: null,
     };
@@ -305,7 +368,9 @@ async function abrirSessao() {
       nova.ultimaAtividade = Date.now();
     };
 
-    const sock = makeWASocket(opcoesSocket(version, state, registrarReenvio));
+    const sock = makeWASocket(
+      opcoesSocket(version, state, registrarReenvio, () => { nova.ignorados++; })
+    );
     nova.sock = sock;
 
     let concluido = false;
@@ -478,6 +543,7 @@ async function fecharSessao(s, piso) {
     console.log(`[WhatsApp] ⏳ Mantendo a conexão por pelo menos ${prazo} para atender pedidos de reenvio...`);
     esperou = await aguardarReenvios(s, piso);
     console.log(`[WhatsApp] 📬 ${s.confirmacoes.size} aparelho(s) confirmaram entrega; ${s.reenvios} reenvio(s) atendido(s) em ${Math.round(esperou / 1000)}s.`);
+    console.log(`[WhatsApp] 🧹 ${s.ignorados} nó(s) de outras conversas descartados sem entrar na fila.`);
   }
 
   // O end() do Baileys é async: fecha o websocket, percorre os handlers de fim e só então
@@ -494,6 +560,9 @@ async function fecharSessao(s, piso) {
     grupo: s.grupo,
     confirmacoes: { total: s.confirmacoes.size, jids: [...s.confirmacoes] },
     reenviosAtendidos: { total: s.reenvios, ids: s.reenviados },
+    // Quanto ruído de outras conversas foi barrado antes da fila. Enquanto isso não existia,
+    // a fila levava a janela inteira para drenar e os pedidos de reenvio nunca eram lidos.
+    nosIgnorados: s.ignorados,
     falhasDeGravacao: s.contarFalhas(),
   };
   const arquivo = diagnostico.gravarResumo(resumo);

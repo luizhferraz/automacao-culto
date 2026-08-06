@@ -29,6 +29,7 @@ const path = require('path');
 // carregamento.
 const DIR_TEMP = fs.mkdtempSync(path.join(os.tmpdir(), 'culto-teste-'));
 process.env.AUTH_DIR = DIR_TEMP;
+process.env.WHATSAPP_GROUP_NAME = 'grupo@g.us';
 process.env.DIAG_DIR = path.join(DIR_TEMP, 'diagnostico');
 // Os tempos são folgados de propósito. O que se mede aqui é diferença de comportamento
 // (cortou ou não cortou, esticou ou não esticou), e valores apertados deixariam um pico de
@@ -295,7 +296,48 @@ async function main() {
     console.log('');
   }
 
-  // 3: o preparo do grupo acontece na subida, não no meio do envio
+  // 3: o filtro de ruído, que é a correção central
+  {
+    reiniciar();
+    console.log('▶ filtro de ruído: só o grupo de avisos entra na fila');
+    await whatsapp.enviarMensagem('grupo@g.us', 'link do culto');
+    const filtrar = socketsCriados[0].opcoes.shouldIgnoreJid;
+
+    checar('o Baileys recebeu um filtro', typeof filtrar === 'function');
+    checar('o grupo de avisos NÃO é filtrado', filtrar('grupo@g.us') === false);
+    checar('outro grupo é filtrado', filtrar('120363415107904841@g.us') === true);
+    checar('status@broadcast é filtrado', filtrar('status@broadcast') === true);
+    checar('conversa individual continua passando', filtrar('5519999@s.whatsapp.net') === false);
+    checar('jid vazio não é filtrado', filtrar(undefined) === false);
+
+    const resumo = await whatsapp.encerrarSessao();
+    checar('os descartes vão para o resumo', resumo.nosIgnorados === 2, `→ ${resumo.nosIgnorados}`);
+    console.log('');
+  }
+
+  // 4: sem grupo configurado o filtro precisa se desligar sozinho
+  {
+    reiniciar();
+    console.log('▶ filtro sem grupo configurado: não pode descartar nada');
+    const salvo = process.env.WHATSAPP_GROUP_NAME;
+    delete process.env.WHATSAPP_GROUP_NAME;
+    delete require.cache[require.resolve('../whatsapp')];
+    const semGrupo = require('../whatsapp');
+
+    await semGrupo.enviarMensagem('grupo@g.us', 'link do culto');
+    const filtrar = socketsCriados[0].opcoes.shouldIgnoreJid;
+    // Sem saber qual é o grupo de avisos, filtrar grupo descartaria os pedidos de reenvio
+    // dele junto com o ruído. Preferir não filtrar nada é a falha segura.
+    checar('nenhum grupo é filtrado', filtrar('120363415107904841@g.us') === false);
+    checar('nem o grupo de avisos', filtrar('grupo@g.us') === false);
+    await semGrupo.encerrarSessao();
+
+    process.env.WHATSAPP_GROUP_NAME = salvo;
+    delete require.cache[require.resolve('../whatsapp')];
+    console.log('');
+  }
+
+  // 5: o preparo do grupo acontece na subida, não no meio do envio
   {
     reiniciar();
     console.log('▶ preparo na subida: mede o grupo antes da hora do envio, não durante');
