@@ -563,6 +563,39 @@ async function main() {
     console.log('');
   }
 
+  // 11: SIGTERM com reenvios chegando precisa respeitar o teto curto
+  {
+    reiniciar();
+    console.log('▶ SIGTERM com reenvios chegando: respeita o teto curto, não o do envio normal');
+    const id = await whatsapp.enviarMensagem('grupo@g.us', 'link do culto');
+    const sock = socketsCriados[0];
+
+    // Atividade constante: é o cenário real depois do filtro de ruído, em que os pedidos de
+    // reenvio finalmente chegam. Antes da correção o teto do SIGTERM era o do envio normal
+    // (RETRY_GRACE_MAX_MS), e como a saída do laço exige silêncio, ele não saía: o processo
+    // passava do kill_timeout do Fly e levava SIGKILL com gravações em voo.
+    const pulso = setInterval(() => {
+      sock.opcoes.getMessage({ id, remoteJid: 'grupo@g.us', fromMe: true });
+    }, 30);
+
+    const inicio = Date.now();
+    // Piso e teto curtos, como o index.js faz ao tratar o sinal.
+    await whatsapp.encerrarSessao({ graca: 200, teto: 200 });
+    const decorrido = Date.now() - inicio;
+    clearInterval(pulso);
+
+    // Sem a correção isso ia até RETRY_GRACE_MAX_MS (5000 no teste), porque a atividade
+    // nunca deixava a quietude ser satisfeita.
+    checar('encerrou dentro do teto curto', decorrido < 1200, `→ ${decorrido}ms`);
+    checar('socket fechado mesmo assim', sock.encerrado === true);
+    checar(
+      'gravações drenadas antes de sair',
+      gravacoesIniciadas > 0 && gravacoesConcluidas === gravacoesIniciadas,
+      `→ ${gravacoesConcluidas}/${gravacoesIniciadas}`
+    );
+    console.log('');
+  }
+
   // ── Resultado ──────────────────────────────────────────────────────────────
   fs.rmSync(DIR_TEMP, { recursive: true, force: true });
 

@@ -95,7 +95,9 @@ async function encerrarComGraca(sinal) {
   console.log(`\n${sinal} recebido. Fechando a sessão do WhatsApp antes de sair...`);
   let resumo = null;
   try {
-    resumo = await encerrarSessao({ graca: GRACA_SIGTERM_MS });
+    // Piso e teto iguais e curtos: o Fly já está contando o kill_timeout, e ultrapassá-lo
+    // significa SIGKILL com gravações de estado de sinal em voo.
+    resumo = await encerrarSessao({ graca: GRACA_SIGTERM_MS, teto: GRACA_SIGTERM_MS });
   } catch (err) {
     console.error('Erro ao encerrar a sessão:', err.message);
   }

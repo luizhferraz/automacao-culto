@@ -521,9 +521,15 @@ function esperarCortavel(ms) {
  * corta no teto. Encerrar por relógio fixo no meio da fila abandona a cauda de pedidos sem
  * sequer confirmar o recebimento deles, e essa mesma cauda é abandonada toda semana.
  */
-async function aguardarReenvios(s, piso) {
+async function aguardarReenvios(s, piso, teto) {
   const inicio = Date.now();
-  const teto = Math.max(piso, GRACA_MAXIMA_MS);
+  // O teto vem de quem chamou, e não de uma constante global. Derivá-lo com
+  // Math.max(piso, GRACA_MAXIMA_MS) parecia inofensivo e era um bug: no caminho do SIGTERM o
+  // piso é de 3s, mas o teto virava os 10 minutos do envio normal. Como a condição de saída
+  // exige silêncio de GRACA_QUIETUDE_MS e os pedidos de reenvio agora realmente chegam, o
+  // laço não sairia, o processo passaria do kill_timeout e levaria SIGKILL no meio das
+  // gravações de estado de sinal. Exatamente o que o caminho do SIGTERM existe para evitar.
+  teto = Math.max(piso, teto);
 
   while (!cortado) {
     const decorrido = Date.now() - inicio;
@@ -535,13 +541,13 @@ async function aguardarReenvios(s, piso) {
   return Date.now() - inicio;
 }
 
-async function fecharSessao(s, piso) {
+async function fecharSessao(s, piso, teto) {
   let esperou = 0;
 
   if (s.enviadas.length > 0 && piso > 0) {
     const prazo = piso >= 1000 ? `${Math.round(piso / 1000)}s` : `${piso}ms`;
     console.log(`[WhatsApp] ⏳ Mantendo a conexão por pelo menos ${prazo} para atender pedidos de reenvio...`);
-    esperou = await aguardarReenvios(s, piso);
+    esperou = await aguardarReenvios(s, piso, teto);
     console.log(`[WhatsApp] 📬 ${s.confirmacoes.size} aparelho(s) confirmaram entrega; ${s.reenvios} reenvio(s) atendido(s) em ${Math.round(esperou / 1000)}s.`);
     console.log(`[WhatsApp] 🧹 ${s.ignorados} nó(s) de outras conversas descartados sem entrar na fila.`);
   }
@@ -582,7 +588,10 @@ async function fecharSessao(s, piso) {
   return resumo;
 }
 
-async function encerrarSessao({ graca = GRACA_MINIMA_MS } = {}) {
+// `graca` é o piso da janela de reenvio e `teto` é o limite duro dela. Quem encerra por
+// SIGTERM precisa passar os dois e mantê-los curtos: ali o Fly já está contando o
+// kill_timeout, e passar dele é levar SIGKILL com gravações em voo.
+async function encerrarSessao({ graca = GRACA_MINIMA_MS, teto = GRACA_MAXIMA_MS } = {}) {
   // Um segundo pedido durante o primeiro é o SIGTERM chegando no meio da janela de reenvio.
   // Sem este ramo ele veria `sessao` já nula, voltaria na hora, e o process.exit de quem
   // chamou mataria o processo com o socket aberto e gravações em voo. Ou seja: alongar a
@@ -598,7 +607,7 @@ async function encerrarSessao({ graca = GRACA_MINIMA_MS } = {}) {
   sessao = null;
 
   cortado = false;
-  encerramento = fecharSessao(s, graca);
+  encerramento = fecharSessao(s, graca, teto);
   try {
     return await encerramento;
   } finally {
