@@ -1,6 +1,17 @@
 app = "culto-automacao"
 primary_region = "iad"
 
+# Quanto o Fly espera entre o SIGTERM e o SIGKILL. É um teto, não uma espera: se o processo
+# terminar antes, a máquina para na hora. O padrão são 5s, e o nosso encerramento não cabe
+# nisso, porque ainda segura um pouco a janela de reenvio, fecha o socket e espera as
+# gravações de estado de sinal drenarem. Já aconteceu de o processo ser morto no meio da
+# drenagem e o resumo de diagnóstico se perder junto.
+#
+# Precisa ficar ACIMA de qualquer cabeçalho de tabela. Em TOML, chave solta depois de um
+# [[cabeçalho]] pertence àquela tabela: colocada no fim do arquivo, ela virava
+# restart[0].kill_timeout e era silenciosamente ignorada.
+kill_timeout = "45s"
+
 [build]
 
 [env]
@@ -13,9 +24,3 @@ primary_region = "iad"
 
 [[restart]]
   policy = "never"
-
-# O padrão do Fly são 5s entre o SIGTERM e o SIGKILL, e o nosso encerramento não cabe nisso:
-# ele ainda segura um pouco a janela de reenvio, fecha o socket e espera as gravações de
-# estado de sinal drenarem. Já aconteceu de o processo ser morto no meio da drenagem, e o
-# resumo de diagnóstico da execução mais importante se perder junto.
-kill_timeout = "45s"
