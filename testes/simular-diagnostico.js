@@ -76,6 +76,38 @@ function main() {
     console.log('');
   }
 
+  // 1b: o vazamento de chave privada da libsignal precisa ser barrado
+  {
+    console.log('▶ vazamento: o despejo de sessão da libsignal não pode ir para o stdout');
+
+    // Captura o que realmente sai no stdout, porque o patch embrulha o console.info.
+    const escritoOriginal = process.stdout.write.bind(process.stdout);
+    let capturado = '';
+    process.stdout.write = (pedaco, ...resto) => {
+      capturado += String(pedaco);
+      return escritoOriginal(pedaco, ...resto);
+    };
+
+    // Exatamente o que libsignal/src/session_record.js faz ao fechar uma sessão.
+    const sessaoFalsa = {
+      registrationId: 1773441846,
+      currentRatchet: { ephemeralKeyPair: { privKey: Buffer.from('SEGREDOPRIVADO') }, rootKey: Buffer.from('CHAVERAIZ') },
+    };
+    console.info('Closing session:', sessaoFalsa);
+    const depoisDoVazamento = capturado;
+
+    console.info('mensagem normal da biblioteca');
+    const depoisDoNormal = capturado;
+
+    process.stdout.write = escritoOriginal;
+
+    checar('o despejo de sessão não chegou ao stdout', depoisDoVazamento === '');
+    checar('a chave privada não aparece em lugar nenhum', !capturado.includes('SEGREDOPRIVADO'));
+    checar('a chave raiz também não', !capturado.includes('CHAVERAIZ'));
+    checar('console.info comum continua passando', depoisDoNormal.includes('mensagem normal da biblioteca'));
+    console.log('');
+  }
+
   // 2: rotação trata os dois tipos separadamente
   {
     console.log('▶ rotação: poda logs e resumos de forma independente');
