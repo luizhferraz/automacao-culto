@@ -80,31 +80,42 @@ function main() {
   {
     console.log('▶ vazamento: o despejo de sessão da libsignal não pode ir para o stdout');
 
-    // Captura o que realmente sai no stdout, porque o patch embrulha o console.info.
-    const escritoOriginal = process.stdout.write.bind(process.stdout);
+    // Captura a saída real dos dois descritores. O console.info vai para o stdout e o
+    // console.warn vai para o stderr, então olhar só um deixaria metade do teste cego.
     let capturado = '';
-    process.stdout.write = (pedaco, ...resto) => {
-      capturado += String(pedaco);
-      return escritoOriginal(pedaco, ...resto);
-    };
+    const originais = {};
+    for (const canal of ['stdout', 'stderr']) {
+      originais[canal] = process[canal].write.bind(process[canal]);
+      process[canal].write = (pedaco, ...resto) => {
+        capturado += String(pedaco);
+        return originais[canal](pedaco, ...resto);
+      };
+    }
 
-    // Exatamente o que libsignal/src/session_record.js faz ao fechar uma sessão.
+    // Exatamente o que libsignal/src/session_record.js faz nos quatro pontos que despejam
+    // o objeto de sessão (linhas 270, 273, 281 e 301).
     const sessaoFalsa = {
       registrationId: 1773441846,
       currentRatchet: { ephemeralKeyPair: { privKey: Buffer.from('SEGREDOPRIVADO') }, rootKey: Buffer.from('CHAVERAIZ') },
     };
     console.info('Closing session:', sessaoFalsa);
+    console.info('Opening session:', sessaoFalsa);
+    console.info('Removing old closed session:', sessaoFalsa);
+    console.warn('Session already closed', sessaoFalsa);
     const depoisDoVazamento = capturado;
 
     console.info('mensagem normal da biblioteca');
+    console.warn('aviso normal da biblioteca');
     const depoisDoNormal = capturado;
 
-    process.stdout.write = escritoOriginal;
+    process.stdout.write = originais.stdout;
+    process.stderr.write = originais.stderr;
 
-    checar('o despejo de sessão não chegou ao stdout', depoisDoVazamento === '');
+    checar('nenhum dos quatro despejos chegou à saída', depoisDoVazamento === '');
     checar('a chave privada não aparece em lugar nenhum', !capturado.includes('SEGREDOPRIVADO'));
     checar('a chave raiz também não', !capturado.includes('CHAVERAIZ'));
     checar('console.info comum continua passando', depoisDoNormal.includes('mensagem normal da biblioteca'));
+    checar('console.warn comum continua passando', depoisDoNormal.includes('aviso normal da biblioteca'));
     console.log('');
   }
 

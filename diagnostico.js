@@ -115,27 +115,42 @@ function limparAntigos() {
 /**
  * Silencia um console.info da libsignal que vaza material criptográfico.
  *
- * Em node_modules/libsignal/src/session_record.js a biblioteca faz, ao fechar uma sessão:
+ * Em node_modules/libsignal/src/session_record.js a biblioteca despeja o objeto de sessão
+ * inteiro no console em quatro pontos (linhas 270, 273, 281 e 301), por exemplo:
  *
  *     console.info("Closing session:", session);
  *
  * O objeto `session` traz o ratchet inteiro, incluindo `ephemeralKeyPair.privKey` e a
  * `rootKey`. Isso vai direto para o stdout, que no Fly vira log retido e transmitido.
  *
- * Fechar sessão é raro no uso normal, então isso passava despercebido. Com FORCAR_SESSOES
- * ligado o bot recria as sessões dos ~850 aparelhos do grupo de uma vez, e aí são 850
- * despejos de chave privada no log, cada um com dezenas de linhas. Além do vazamento, são 850
- * escritas síncronas em stdout numa máquina de 1 vCPU, no minuto mais sensível da janela.
+ * Abrir e fechar sessão é raro no uso normal, então isso passava despercebido. Com
+ * FORCAR_SESSOES ligado o bot recria as sessões dos ~850 aparelhos do grupo de uma vez, e aí
+ * são centenas de despejos de chave privada no log, cada um com dezenas de linhas. Além do
+ * vazamento, são centenas de escritas síncronas em stdout numa máquina de 1 vCPU, no minuto
+ * mais sensível da janela de envio.
  *
- * Não dá para configurar isso na biblioteca: é console.info direto. A saída é interceptar, e
- * só esta mensagem. Qualquer outro console.info continua passando.
+ * Não dá para configurar isso na biblioteca: é console direto. A saída é interceptar, e só
+ * estas mensagens. Qualquer outra saída de console continua passando, inclusive os erros de
+ * sessão do session_cipher, que são úteis e não carregam chave.
  */
+const PREFIXOS_QUE_VAZAM_SESSAO = [
+  'Closing session:',
+  'Opening session:',
+  'Removing old closed session:',
+  'Session already closed',
+];
+
 function silenciarVazamentoDeSessao() {
-  const original = console.info.bind(console);
-  console.info = (...args) => {
-    if (typeof args[0] === 'string' && args[0].startsWith('Closing session:')) return;
-    original(...args);
-  };
+  const vaza = (args) =>
+    typeof args[0] === 'string' && PREFIXOS_QUE_VAZAM_SESSAO.some(p => args[0].startsWith(p));
+
+  for (const nivel of ['info', 'warn']) {
+    const original = console[nivel].bind(console);
+    console[nivel] = (...args) => {
+      if (vaza(args)) return;
+      original(...args);
+    };
+  }
 }
 
 silenciarVazamentoDeSessao();
