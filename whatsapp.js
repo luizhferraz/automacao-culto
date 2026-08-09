@@ -358,6 +358,7 @@ async function abrirSessao() {
       reenviados: [],
       confirmacoes: new Set(),
       ignorados: 0,
+      retriesRecebidos: [],
       ultimaAtividade: 0,
       conectadoEm: null,
     };
@@ -372,6 +373,25 @@ async function abrirSessao() {
       opcoesSocket(version, state, registrarReenvio, () => { nova.ignorados++; })
     );
     nova.sock = sock;
+
+    // O sinal de atividade da janela precisa ser "CHEGOU pedido de reenvio", não "consegui
+    // atendê-lo". A versão anterior só atualizava o relógio dentro do getMessage, quando a
+    // mensagem era achada no histórico, e na prática quase nenhum pedido é desse tipo: no
+    // culto de 09/08 foram 388 pedidos e só 1 servido. Com o relógio congelado no envio, a
+    // condição de quietude já estava satisfeita quando o piso vencia, e a janela dita
+    // elástica saía sempre no piso exato. Os eventos CB: são emitidos num EventEmitter comum
+    // com limite de ouvintes desativado, então este ouvinte extra não interfere no do Baileys.
+    // De quebra, registra QUEM pediu reenvio de QUAL mensagem, que é o dado que faltava para
+    // separar "ninguém pediu" de "pediram e não foi atendido".
+    sock.ws?.on?.('CB:receipt', (no) => {
+      if (no?.attrs?.type !== 'retry') return;
+      nova.ultimaAtividade = Date.now();
+      nova.retriesRecebidos.push({
+        id: no.attrs.id,
+        de: no.attrs.participant || no.attrs.from,
+        em: new Date().toISOString(),
+      });
+    });
 
     let concluido = false;
     const prazo = setTimeout(() => {
@@ -560,6 +580,9 @@ async function fecharSessao(s, piso, teto) {
     grupo: s.grupo,
     confirmacoes: { total: s.confirmacoes.size, jids: [...s.confirmacoes] },
     reenviosAtendidos: { total: s.reenvios, ids: s.reenviados },
+    // Todos os pedidos de reenvio que CHEGARAM, atendidos ou não, com quem pediu e o id
+    // pedido. É o que separa "ninguém pediu a mensagem de hoje" de "pediram e não atendi".
+    retriesRecebidos: { total: s.retriesRecebidos.length, pedidos: s.retriesRecebidos },
     // Quanto ruído de outras conversas foi barrado antes da fila. Enquanto isso não existia,
     // a fila levava a janela inteira para drenar e os pedidos de reenvio nunca eram lidos.
     nosIgnorados: s.ignorados,

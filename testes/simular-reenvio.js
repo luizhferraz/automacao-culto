@@ -88,6 +88,9 @@ function criarSocketFalso(opcoes) {
     },
     // O end() do Baileys é async e leva um tempo real. Se o whatsapp.js não aguardar,
     // o encerrarSessao volta com o socket ainda aberto, e o teste pega isso.
+    // O whatsapp.js escuta CB:receipt direto no ws para saber que chegou pedido de reenvio.
+    // No Baileys real o ws é um EventEmitter; aqui basta o mesmo contrato.
+    ws: new (require('events').EventEmitter)(),
     end: async () => {
       // O resumo precisa já refletir ESTA sessão AQUI. Ele era gravado depois do end e da
       // drenagem, e o Fly matou o processo no meio da drenagem justamente na execução mais
@@ -458,15 +461,32 @@ async function main() {
     // Pedido chegando quase no fim do piso (1000ms). Com a quietude de 600ms, o fechamento
     // tem que ser empurrado para depois de 900+600=1500ms. Uma espera de relógio fixo pararia
     // em 1000ms, então o limiar de 1300ms separa os dois comportamentos com folga dos dois lados.
-    setTimeout(() => { sock.opcoes.getMessage({ id, remoteJid: 'grupo@g.us', fromMe: true }); }, 900);
+    //
+    // O pedido chega como receipt de retry no ws, pedindo uma mensagem que NÃO está no
+    // histórico. Este é o caso dominante em produção (no culto de 09/08: 388 pedidos, 1
+    // atendível) e era exatamente o que não esticava a janela: o sinal antigo ficava dentro
+    // do getMessage, que só dispara quando a mensagem é achada.
+    setTimeout(() => {
+      sock.ws.emit('CB:receipt', { attrs: { type: 'retry', id: 'MSG-ANTIGA-FORA-DO-HISTORICO', from: 'pessoa1@lid' } });
+    }, 900);
 
     const inicio = Date.now();
     const resumo = await whatsapp.encerrarSessao();
     const decorrido = Date.now() - inicio;
 
-    checar('esperou além do piso por causa do reenvio', decorrido > 1300, `→ ${decorrido}ms`);
+    checar('esperou além do piso por causa do pedido', decorrido > 1300, `→ ${decorrido}ms`);
     checar('respeitou o teto', decorrido < 5000, `→ ${decorrido}ms`);
-    checar('reenvio contabilizado no resumo', resumo?.reenviosAtendidos?.total === 1);
+    checar('o pedido ficou registrado no resumo', resumo?.retriesRecebidos?.total === 1);
+    checar(
+      'com quem pediu e o id pedido',
+      resumo?.retriesRecebidos?.pedidos?.[0]?.de === 'pessoa1@lid'
+        && resumo?.retriesRecebidos?.pedidos?.[0]?.id === 'MSG-ANTIGA-FORA-DO-HISTORICO'
+    );
+    checar('receipt comum não conta como atividade', (() => {
+      // Um receipt de leitura não pode esticar a janela nem entrar no registro.
+      sock.ws.emit('CB:receipt', { attrs: { type: 'read', id: 'QUALQUER', from: 'pessoa2@lid' } });
+      return resumo.retriesRecebidos.total === 1;
+    })());
     console.log('');
   }
 
