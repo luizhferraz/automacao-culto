@@ -56,6 +56,8 @@ let socketsCriados = [];
 let comportamentoConexao = 'abre';
 // Faz o groupMetadata falhar, para provar que o preparo nunca segura o link.
 let metadataQuebrado = false;
+// Faz o query de iq falhar, para provar que o anúncio de sessão passiva nunca segura o link.
+let queryQuebrado = false;
 let gravacoesConcluidas = 0;
 let gravacoesIniciadas = 0;
 // Categorias que chegaram ao armazenamento de verdade, depois de passar pelo whatsapp.js.
@@ -80,6 +82,8 @@ function criarSocketFalso(opcoes) {
     // Quantas vezes o grupo foi medido. Serve para provar que o preparo roda na subida e não
     // se repete no envio, valendo com o FORCAR_SESSOES ligado ou desligado.
     medicoes: 0,
+    // Os iq crus que o whatsapp.js mandou por conta própria. Hoje só o de sessão passiva.
+    iqs: [],
     ev: {
       on: (evento, handler) => {
         if (!ouvintes.has(evento)) ouvintes.set(evento, []);
@@ -104,6 +108,11 @@ function criarSocketFalso(opcoes) {
       } catch { /* ainda não existe */ }
       await new Promise(r => setTimeout(r, 60));
       sock.encerrado = true;
+    },
+    query: async (no) => {
+      sock.iqs.push(no);
+      if (queryQuebrado) throw new Error('servidor não respondeu');
+      return { tag: 'iq', attrs: { type: 'result' } };
     },
     groupFetchAllParticipating: async () => ({ 'grupo@g.us': { subject: 'Avisos' } }),
     groupMetadata: async () => {
@@ -224,6 +233,7 @@ function reiniciar() {
   categoriasGravadas = [];
   armazenamento = {};
   metadataQuebrado = false;
+  queryQuebrado = false;
 }
 
 const bytesDe = (m) => Buffer.from(proto.Message.encode(proto.Message.fromObject(m)).finish());
@@ -347,6 +357,52 @@ async function main() {
 
     process.env.WHATSAPP_GROUP_NAME = salvo;
     delete require.cache[require.resolve('../whatsapp')];
+    console.log('');
+  }
+
+  // 5: a sessão precisa se anunciar passiva, senão o celular do dono para de notificar
+  {
+    reiniciar();
+    console.log('▶ notificação no celular: a sessão se anuncia passiva ao abrir');
+
+    await whatsapp.conectar();
+    const sock = socketsCriados[0];
+
+    // No login o Baileys manda `<iq xmlns="passive"><active/></iq>` por conta própria, sem
+    // consultar markOnlineOnConnect. Sem o iq inverso a conta fica com um aparelho vinculado
+    // ativo durante a janela inteira, e o push para de chegar no celular do dono.
+    const passivo = sock.iqs.find(no => no.attrs?.xmlns === 'passive');
+    checar('mandou um iq de passive', !!passivo);
+    checar(
+      'como set endereçado ao servidor',
+      passivo?.attrs?.type === 'set' && passivo?.attrs?.to === '@s.whatsapp.net',
+      `→ type=${passivo?.attrs?.type} to=${passivo?.attrs?.to}`
+    );
+    // O filho é o que distingue a correção do bug: <active/> é justamente o que a biblioteca
+    // já mandou, e repeti-lo aqui passaria no teste de xmlns sem consertar nada.
+    checar(
+      'com o filho <passive/>, e não <active/>',
+      passivo?.content?.[0]?.tag === 'passive',
+      `→ <${passivo?.content?.[0]?.tag}/>`
+    );
+
+    const resumo = await whatsapp.encerrarSessao();
+    checar('o resumo registra a sessão como passiva', resumo?.sessaoPassiva === true);
+    console.log('');
+  }
+
+  // 6: o anúncio que falha não pode segurar o link do culto
+  {
+    reiniciar();
+    queryQuebrado = true;
+    console.log('▶ anúncio de sessão passiva com falha: o link do culto sai mesmo assim');
+
+    const id = await whatsapp.enviarMensagem('grupo@g.us', 'link do culto');
+    checar('mensagem enviada apesar do iq ter falhado', !!id);
+    checar('e o iq chegou a ser tentado', socketsCriados[0].iqs.length === 1);
+
+    const resumo = await whatsapp.encerrarSessao();
+    checar('o resumo denuncia que a sessão NÃO ficou passiva', resumo?.sessaoPassiva === false);
     console.log('');
   }
 
