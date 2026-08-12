@@ -34,8 +34,30 @@ Se o primeiro envio do aviso falhar, o bot tenta de novo na tentativa seguinte, 
 5. Mantém a conexão de pé enquanto chegarem pedidos de reenvio (veja abaixo)
 6. Ao fim da janela → a máquina se desliga automaticamente
 
-O bot não anuncia presença (`markOnlineOnConnect: false`), que é o que suprimiria as
-notificações no celular. Ficar conectado, por si só, não suprime nada.
+### Notificação no celular do dono
+
+O bot é um aparelho vinculado à conta pessoal, então enquanto o socket está de pé o WhatsApp
+precisa decidir para onde mandar o push. **Duas** coisas precisam estar certas, e por muito
+tempo só uma estava:
+
+1. **Presença.** `markOnlineOnConnect: false` faz o Baileys anunciar `presence: unavailable` ao
+   abrir a conexão. Essa metade sempre esteve correta.
+2. **Sessão ativa.** No login (`CB:success`) o Baileys manda também, **incondicionalmente e sem
+   sequer consultar `markOnlineOnConnect`**, `<iq xmlns="passive"><active/></iq>`. É o mesmo iq
+   que o WhatsApp Web usa para dizer que a aba está em foco (`active`) ou foi para segundo plano
+   (`passive`), e a própria biblioteca não sabe explicar por que o manda: o comentário no fonte
+   é *"i have no idea why this exists. pls enlighten me"*. Está assim tanto na `7.0.0-rc11`
+   (a versão travada no `package-lock.json`) quanto na `rc14`.
+
+Ou seja: o bot dizia "indisponível" na presença e, milissegundos depois, se declarava a sessão
+**ativa** da conta. Por isso o `anunciarSessaoPassiva` manda o iq inverso logo após o
+`connection: open`, e a ordem na rede fica `active` (lib) → `unavailable` (lib) → `passive`
+(nosso).
+
+Ficar conectado deixou de ser inofensivo quando o tempo de socket aberto cresceu: somando a
+conexão na subida (~5 min), a janela de monitoramento (até 36 min) e a janela elástica de
+reenvio (até 10 min), são perto de **50 minutos seguidos, três vezes por semana**. Se o celular
+voltar a não notificar, o primeiro campo a conferir é `sessaoPassiva` no resumo da janela.
 
 ### O problema do "Aguardando mensagem"
 
@@ -143,7 +165,9 @@ em `/data/diagnostico/`:
   `Failed to encrypt for recipient` (quem ficou de fora, com o jid). A diferença entre as duas
   é a **lista nominal** de quem não recebeu. Tudo de nível `warn` para cima entra também.
 - `resumo-<carimbo>.json`: ids e horários dos envios, tamanho do grupo, quantos aparelhos,
-  quem confirmou entrega, quantos reenvios foram atendidos e quantas gravações falharam.
+  quem confirmou entrega, quantos reenvios foram atendidos, quantas gravações falharam e
+  `sessaoPassiva` (falso significa que a conta passou a janela inteira com um aparelho
+  vinculado ativo, e o celular do dono provavelmente ficou sem notificação).
 
 O log é filtrado por uma lista de frases, não por nível. Medido em produção: em `debug` puro o
 Baileys escreve cerca de **1 MB por minuto** ao drenar a fila de uma semana, e quase tudo é
@@ -221,6 +245,7 @@ TZ=America/Sao_Paulo
 | `FORCAR_SESSOES` | (desligado) | `1` recria as sessões de sinal em lote na subida. Ver a quinta defesa acima |
 | `LOTE_SESSOES` | `50` | Tamanho do lote acima. Um aparelho com erro derruba o lote inteiro, por isso é fatiado |
 | `PREPARO_TIMEOUT_MS` | `45000` | Prazo do preparo do grupo. Estourou, para onde está e deixa o envio seguir |
+| `PASSIVO_TIMEOUT_MS` | `10000` | Prazo do iq que devolve a sessão ao estado passivo. Ver "Notificação no celular do dono" |
 | `BAILEYS_LOG_LEVEL` | `warn` | Nível do log que vai para o stdout (o `fly logs`) |
 | `DIAG_DIR` | `/data/diagnostico` | Onde ficam os logs e resumos por janela |
 | `DIAG_MAX_ARQUIVOS` | `20` | Quantos logs e quantos resumos manter |
@@ -360,7 +385,9 @@ sobrevivendo em disco com o conteúdo idêntico byte a byte, **nenhum envio enxe
 já marcado** (mesmo com um mapa velho no armazenamento, que é o bug do domingo 02/08), a
 gravação da memória de distribuição sendo descartada sem afetar as sessões de sinal, o
 `getMessage` do socket sabendo responder um pedido de reenvio, **a janela se estendendo quando
-chega um pedido perto do fim do piso**, o resumo de diagnóstico sendo gravado, as gravações do
+chega um pedido perto do fim do piso**, **o iq de sessão passiva saindo com o filho
+`<passive/>`** ao abrir a conexão (e o link do culto saindo mesmo quando esse iq falha),
+o resumo de diagnóstico sendo gravado, as gravações do
 estado de sinal drenadas antes da saída, uma queda antes do envio virando erro em vez de
 sucesso silencioso, o `conectar()` da subida devolvendo `false` em vez de derrubar o processo,
 e as duas mensagens de uma mesma janela reaproveitando uma única conexão.

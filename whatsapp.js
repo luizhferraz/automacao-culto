@@ -6,6 +6,7 @@ const {
   isJidGroup,
   isJidStatusBroadcast,
   isJidNewsletter,
+  S_WHATSAPP_NET,
 } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const path = require('path');
@@ -39,6 +40,9 @@ const GRACA_SIGTERM_MS = Number(process.env.RETRY_GRACE_SIGTERM_MS || 3000);
 
 const TIMEOUT_CONEXAO_MS = Number(process.env.CONEXAO_TIMEOUT_MS || 30000);
 const ESPERA_APOS_CONECTAR_MS = Number(process.env.ESPERA_APOS_CONECTAR_MS || 3000);
+
+// Prazo do iq que devolve a sessão para o estado passivo. Ver anunciarSessaoPassiva.
+const PRAZO_PASSIVO_MS = Number(process.env.PASSIVO_TIMEOUT_MS || 10000);
 
 // ── Sessões de sinal forçadas antes do envio ─────────────────────────────────
 // Desligado por padrão. Ver o comentário em garantirSessoesFrescas para o porquê.
@@ -123,9 +127,9 @@ function opcoesSocket(version, state, aoReenviar = () => {}, aoIgnorar = () => {
     logger: diagnostico.logger(),
     printQRInTerminal: false,
     browser: ['Culto Bot', 'Chrome', '1.0'],
-    // Continua false de propósito: é o que impede o WhatsApp de marcar a conta como online
-    // e parar de notificar no celular. Ficar conectado não suprime notificação; anunciar
-    // presença é que suprime.
+    // Continua false de propósito, mas resolve só METADE do problema da notificação: esta
+    // opção governa apenas a presença. O outro lado é o iq de sessão ativa que o Baileys
+    // manda sozinho no login, e que só o anunciarSessaoPassiva desfaz.
     markOnlineOnConnect: false,
     syncFullHistory: false,
     // Sem isto o Baileys responde todo pedido de reenvio com undefined.
@@ -330,6 +334,48 @@ async function prepararGrupo(s, chatId, limite) {
   console.log(`[WhatsApp] 🔄 Sessões recriadas para ${s.grupo.sessoesForcadas}/${jids.length} aparelho(s).`);
 }
 
+/**
+ * Desfaz o `active` que o Baileys anuncia por conta própria no login.
+ *
+ * `markOnlineOnConnect: false` cobre só a metade visível do problema. Ela governa a
+ * PRESENÇA: com a opção desligada, o Baileys manda `presence: unavailable` ao abrir
+ * (chats.js, no tratamento de `connection.update`). Essa parte sempre esteve certa.
+ *
+ * A metade que faltava é que, no `CB:success` do login, o Baileys manda TAMBÉM
+ * `<iq xmlns="passive"><active/></iq>` — incondicionalmente, sem sequer consultar
+ * `markOnlineOnConnect` (socket.js, tanto na 7.0.0-rc11 quanto na rc14). É o mesmo iq que o
+ * WhatsApp Web usa para dizer que a aba está em foco (`active`) ou foi para segundo plano
+ * (`passive`), e a própria biblioteca não sabe explicar por que o manda: o comentário no
+ * fonte é "i have no idea why this exists. pls enlighten me".
+ *
+ * Ou seja, o bot dizia "indisponível" na presença e, milissegundos depois, se declarava a
+ * sessão ATIVA da conta. Enquanto isso vale, o WhatsApp tem um aparelho vinculado ativo e
+ * para de mandar push para o celular do dono, que é o sintoma relatado.
+ *
+ * Ficar de pé deixou de ser inofensivo quando o tempo de socket aberto cresceu: entre a
+ * conexão na subida, a janela de monitoramento e a janela elástica de reenvio, são perto de
+ * 50 min seguidos, três vezes por semana.
+ *
+ * O iq inverso vai DEPOIS do `connection: open`, que o Baileys emite depois do `active`, e
+ * depois do `unavailable`, porque o ouvinte do chats.js foi registrado antes deste. A ordem
+ * na rede fica: active (lib) → unavailable (lib) → passive (aqui).
+ */
+async function anunciarSessaoPassiva(s) {
+  try {
+    await s.sock.query({
+      tag: 'iq',
+      attrs: { to: S_WHATSAPP_NET, xmlns: 'passive', type: 'set' },
+      content: [{ tag: 'passive', attrs: {} }],
+    }, PRAZO_PASSIVO_MS);
+    s.passiva = true;
+    console.log('[WhatsApp] 🔕 Sessão anunciada como passiva.');
+  } catch (err) {
+    // Nunca fatal: no pior caso o celular fica sem notificação durante a janela, e o link do
+    // culto, que é a razão de o bot existir, sai do mesmo jeito. O resumo registra a falha.
+    console.warn('[WhatsApp] Não consegui anunciar a sessão como passiva:', err.message);
+  }
+}
+
 async function abrirSessao() {
   if (sessao && sessao.viva) return sessao;
 
@@ -361,6 +407,7 @@ async function abrirSessao() {
       retriesRecebidos: [],
       ultimaAtividade: 0,
       conectadoEm: null,
+      passiva: false,
     };
 
     const registrarReenvio = (id) => {
@@ -433,7 +480,11 @@ async function abrirSessao() {
         // o timeout derrubar tudo por causa da pausa de acomodação logo abaixo.
         clearTimeout(prazo);
         console.log('[WhatsApp] 🔗 Conectado.');
-        esperar(ESPERA_APOS_CONECTAR_MS).then(() => finalizar(null));
+        // Antes da pausa de acomodação, para a conta passar o mínimo de tempo possível
+        // marcada como sessão ativa. O anúncio nunca rejeita.
+        anunciarSessaoPassiva(nova)
+          .then(() => esperar(ESPERA_APOS_CONECTAR_MS))
+          .then(() => finalizar(null));
         return;
       }
 
@@ -576,6 +627,9 @@ async function fecharSessao(s, piso, teto) {
     conectadoEm: s.conectadoEm,
     encerradoEm: new Date().toISOString(),
     esperaDeReenvioMs: esperou,
+    // Falso aqui significa que a conta passou a janela inteira com um aparelho vinculado
+    // ativo, e é a primeira coisa a conferir se o celular voltar a não notificar.
+    sessaoPassiva: s.passiva,
     envios: s.envios,
     grupo: s.grupo,
     confirmacoes: { total: s.confirmacoes.size, jids: [...s.confirmacoes] },
