@@ -1,0 +1,33 @@
+name: Publicar no Fly.io
+
+# Manual de propósito. O bot atende culto em horário fixo, e um deploy disparado por push
+# poderia trocar a imagem no meio de uma janela, derrubando o socket com o link a caminho.
+on:
+  workflow_dispatch:
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      APP: culto-automacao
+      # Mesma máquina que o start-bot.yml liga.
+      MAQUINA: 148ee339cee098
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Publicar imagem
+        run: flyctl deploy --remote-only --app "$APP"
+
+      # O deploy sobe a máquina para aplicar a imagem. Fora da janela do culto ela precisa
+      # voltar a ficar parada: quem liga é o cron-job.org, minutos antes de cada culto, e o
+      # fly.toml usa `restart policy = never` justamente para ela não se levantar sozinha.
+      # Socket aberto à toa é o que faz o WhatsApp marcar um aparelho vinculado como ativo e
+      # parar de notificar o celular do dono — o problema que este projeto acabou de corrigir.
+      - name: Devolver a máquina ao estado parado
+        run: |
+          flyctl machine stop "$MAQUINA" --app "$APP" || true
+          flyctl machine list --app "$APP"
