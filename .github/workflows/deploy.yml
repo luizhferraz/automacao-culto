@@ -31,6 +31,27 @@ jobs:
           echo "──── eventos recentes ────"
           flyctl machine status "$MAQUINA" --app "$APP" || true
 
+      # Só os NOMES, nunca os valores. Existe porque a configuração efetiva do bot é a soma
+      # do código com os secrets do Fly, e os secrets não aparecem em lugar nenhum do repo.
+      # Foi assim que um FORCAR_SESSOES=1 e um RETRY_GRACE_MS de experimentos de agosto/2026
+      # continuaram valendo em produção semanas depois de o README tê-los dado como
+      # desligados: o padrão do código estava certo, e o secret esquecido o sobrepunha.
+      - name: Conferir nomes dos secrets do Fly
+        run: flyctl secrets list --app "$APP"
+
+      # Remove as sobras conhecidas de experimentos de diagnóstico. FORCAR_SESSOES foi ligada
+      # uma vez (quarta 05/08) e PIOROU a entrega, como documenta o README; os RETRY_* foram
+      # esticados na mesma época, antes de a janela elástica existir, e seguravam o socket
+      # aberto 20 minutos além do necessário em toda janela. Remover secret inexistente não é
+      # erro fatal aqui: o unset é chamado um a um e tolera ausência.
+      - name: Limpar sobras de experimentos nos secrets
+        run: |
+          for s in FORCAR_SESSOES RETRY_GRACE_MS RETRY_QUIET_MS RETRY_GRACE_MAX_MS; do
+            flyctl secrets unset "$s" --app "$APP" --stage && echo "removido: $s" || echo "não estava definido: $s"
+          done
+
+      # O --stage acima deixa a remoção pendente; o deploy logo abaixo aplica tudo junto na
+      # máquina, numa única troca de configuração.
       - name: Publicar imagem
         run: flyctl deploy --remote-only --app "$APP"
 
