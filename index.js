@@ -9,6 +9,16 @@ const config = {
   nomeGrupo: process.env.WHATSAPP_GROUP_NAME,
 };
 
+// ── Teto de vida do processo ─────────────────────────────────────────────────
+// Rede de segurança para a máquina nunca passar a noite de pé. O ciclo normal cabe em
+// ~55 min: ligada pelo cron-job.org minutos antes do culto, janela de até 36 min, reenvio
+// de até 10 min, e o desligar do scheduler encerra o processo. Qualquer coisa fora disso —
+// uma espera de rede pendurada, o cron que não disparou porque a máquina subiu depois do
+// minuto agendado — deixava o processo vivo indefinidamente, com o socket do WhatsApp
+// aberto. Socket aberto é um aparelho vinculado segurando a sessão da conta, e é o que faz
+// o celular do dono parar de receber notificação até alguém notar e desligar na mão.
+const TETO_VIDA_MS = Number(process.env.TETO_VIDA_MS || 90 * 60 * 1000);
+
 function validarConfig() {
   const faltando = Object.entries(config)
     .filter(([, v]) => !v)
@@ -83,6 +93,17 @@ async function main() {
   iniciarAgendamentos(config);
   console.log('\n✅ Bot rodando! Aguardando os horários agendados...');
   console.log('   (Mantenha este terminal aberto)\n');
+
+  // Os unref garantem que estes relógios nunca sejam o que mantém o processo vivo: no
+  // ciclo normal o desligar do scheduler sai muito antes e eles simplesmente não disparam.
+  const relogioTeto = setTimeout(() => {
+    console.error(`⏰ Processo vivo há ${Math.round(TETO_VIDA_MS / 60000)} min, além de qualquer janela normal. Encerrando por segurança.`);
+    encerrarComGraca('Teto de vida');
+    // Se até o encerramento estiver pendurado, sai na marra. Perder uma gravação de
+    // estado é melhor do que segurar a sessão da conta a noite inteira.
+    setTimeout(() => process.exit(1), 60000).unref();
+  }, TETO_VIDA_MS);
+  relogioTeto.unref();
 }
 
 // O Fly manda SIGTERM quando para a máquina. Sem tratar o sinal, o processo morre no meio

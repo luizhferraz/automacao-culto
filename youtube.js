@@ -2,6 +2,13 @@ const axios = require('axios');
 
 const BASE_URL = 'https://www.googleapis.com/youtube/v3';
 
+// Toda chamada tem prazo. Sem ele, uma conexão pendurada congela o monitoramento inteiro:
+// o await da tentativa nunca volta, a próxima nunca é agendada, o desligar do scheduler
+// nunca roda e a máquina passa a noite de pé com o socket do WhatsApp aberto — segurando a
+// sessão da conta e, com ela, as notificações do celular do dono. O erro de timeout cai no
+// try/catch de cada método e a tentativa seguinte, um minuto depois, recomeça do zero.
+const http = axios.create({ timeout: Number(process.env.YOUTUBE_TIMEOUT_MS || 15000) });
+
 // Normaliza string: minúsculas + remove acentos
 function normalizar(str) {
   return str
@@ -31,7 +38,7 @@ async function buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras = 8) {
   // Método 2: transmissões agendadas (upcoming)
   for (const eventType of ['live', 'upcoming']) {
     try {
-      const { data } = await axios.get(`${BASE_URL}/search`, {
+      const { data } = await http.get(`${BASE_URL}/search`, {
         params: {
           part: 'snippet',
           channelId,
@@ -64,7 +71,7 @@ async function buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras = 8) {
   // para não pegar o culto da manhã.
   try {
     const uploadPlaylistId = channelId.replace(/^UC/, 'UU');
-    const { data } = await axios.get(`${BASE_URL}/playlistItems`, {
+    const { data } = await http.get(`${BASE_URL}/playlistItems`, {
       params: {
         part: 'snippet',
         playlistId: uploadPlaylistId,
@@ -91,7 +98,7 @@ async function buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras = 8) {
       // também retornam 'live'.
       let fonte = 'estreia';
       try {
-        const { data: videoData } = await axios.get(`${BASE_URL}/videos`, {
+        const { data: videoData } = await http.get(`${BASE_URL}/videos`, {
           params: { part: 'contentDetails', id: videoId, key: apiKey },
         });
         const duration = videoData.items?.[0]?.contentDetails?.duration;
@@ -117,7 +124,7 @@ async function buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras = 8) {
 
 async function buscarUltimaGravacao(apiKey, channelId) {
   try {
-    const { data } = await axios.get(`${BASE_URL}/search`, {
+    const { data } = await http.get(`${BASE_URL}/search`, {
       params: {
         part: 'snippet',
         channelId,

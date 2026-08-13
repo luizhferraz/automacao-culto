@@ -56,8 +56,21 @@ Ou seja: o bot dizia "indisponível" na presença e, milissegundos depois, se de
 
 Ficar conectado deixou de ser inofensivo quando o tempo de socket aberto cresceu: somando a
 conexão na subida (~5 min), a janela de monitoramento (até 36 min) e a janela elástica de
-reenvio (até 10 min), são perto de **50 minutos seguidos, três vezes por semana**. Se o celular
-voltar a não notificar, o primeiro campo a conferir é `sessaoPassiva` no resumo da janela.
+reenvio (até 10 min), são perto de **50 minutos seguidos, três vezes por semana**.
+
+Se o celular voltar a não notificar, confira nesta ordem:
+
+1. **`sessaoPassiva` no resumo da última janela** (falso = a conta passou a janela inteira
+   marcada como sessão ativa).
+2. **A máquina está parada fora de janela?** Máquina de pé é socket aberto segurando a sessão.
+   O histórico de eventos do `fly machine status` mostra desde quando e por quê. Como rede de
+   segurança, o processo agora tem um teto de vida (`TETO_VIDA_MS`, 90 min): mesmo que tudo o
+   mais falhe, ele se encerra sozinho em vez de passar a noite de pé.
+3. **Secrets do Fly sobrepondo o código** (ver o quadro de cuidado mais abaixo).
+4. Se tudo acima estiver certo e o celular continuar mudo mesmo com a máquina parada, o estado
+   preso é do **próprio aparelho**: abra o WhatsApp em primeiro plano (ou force o fechamento e
+   abra de novo) para ele voltar a se registrar como a sessão ativa da conta. Em último caso,
+   desvincule o "Culto Bot" em Aparelhos conectados e pareie de novo pelo QR.
 
 ### O problema do "Aguardando mensagem"
 
@@ -145,6 +158,15 @@ recriadas, 18 lotes, zero falha), o que reforça que o problema estava na fila d
 nas sessões. Está desligada de novo. Com o filtro de ruído no lugar, a recriação de sessão
 passa a acontecer sozinha e de forma **dirigida**: cada pedido de reenvio atendido faz o
 Baileys recriar a sessão daquele aparelho específico. Só volte a ligá-la com evidência nova.
+
+> **Cuidado com os secrets do Fly.** A configuração efetiva é a soma do código com os secrets
+> (`fly secrets list`), e secret esquecido sobrepõe o padrão do código em silêncio. Foi
+> exatamente o que aconteceu aqui: "desligada de novo" acima era verdade no código desde
+> 06/08, mas o `FORCAR_SESSOES=1` do experimento continuou como secret e valendo em produção
+> até 13/08 — o resumo de cada janela entregava a prova (`sessoesForcadas: 856`) sem ninguém
+> notar. Um `RETRY_GRACE_MS=1200000` da mesma época segurava o socket aberto 20 minutos em
+> toda janela. O workflow de deploy agora lista os **nomes** dos secrets a cada publicação e
+> remove essas sobras conhecidas.
 
 Não dá para ser cirúrgico aqui. Sessão obsoleta é, por construção, invisível do lado do bot:
 não existe log, erro ou sinal que aponte quem está nessa situação. Ou se recria tudo, ou não
@@ -246,6 +268,8 @@ TZ=America/Sao_Paulo
 | `LOTE_SESSOES` | `50` | Tamanho do lote acima. Um aparelho com erro derruba o lote inteiro, por isso é fatiado |
 | `PREPARO_TIMEOUT_MS` | `45000` | Prazo do preparo do grupo. Estourou, para onde está e deixa o envio seguir |
 | `PASSIVO_TIMEOUT_MS` | `10000` | Prazo do iq que devolve a sessão ao estado passivo. Ver "Notificação no celular do dono" |
+| `TETO_VIDA_MS` | `5400000` | Teto de vida do processo (90 min). Rede de segurança: se nada encerrou o processo até aí, ele se encerra sozinho em vez de passar a noite com o socket aberto segurando a sessão da conta |
+| `YOUTUBE_TIMEOUT_MS` | `15000` | Prazo de cada chamada à API do YouTube. Sem ele, uma conexão pendurada congelava o monitoramento e o desligamento nunca acontecia |
 | `BAILEYS_LOG_LEVEL` | `warn` | Nível do log que vai para o stdout (o `fly logs`) |
 | `DIAG_DIR` | `/data/diagnostico` | Onde ficam os logs e resumos por janela |
 | `DIAG_MAX_ARQUIVOS` | `20` | Quantos logs e quantos resumos manter |
