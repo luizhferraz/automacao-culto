@@ -41,6 +41,7 @@ process.env.RETRY_PASSO_MS = '25';        // granularidade da espera
 process.env.RETRY_GRACE_SIGTERM_MS = '50';
 process.env.ESPERA_APOS_CONECTAR_MS = '0';
 process.env.CONEXAO_TIMEOUT_MS = '2000';
+process.env.PASSIVO_REANUNCIO_MS = '150';  // reforço do anúncio passivo, rápido para o teste
 process.env.BAILEYS_LOG_LEVEL = 'silent';
 
 const FORCANDO = process.env.FORCAR_SESSOES === '1';
@@ -399,10 +400,43 @@ async function main() {
 
     const id = await whatsapp.enviarMensagem('grupo@g.us', 'link do culto');
     checar('mensagem enviada apesar do iq ter falhado', !!id);
-    checar('e o iq chegou a ser tentado', socketsCriados[0].iqs.length === 1);
+    // Com o reforço armado, a janela de reenvio dá tempo de novas tentativas: são "uma ou
+    // mais", não exatamente uma.
+    checar('e o iq chegou a ser tentado', socketsCriados[0].iqs.length >= 1, `→ ${socketsCriados[0].iqs.length} tentativa(s)`);
 
     const resumo = await whatsapp.encerrarSessao();
     checar('o resumo denuncia que a sessão NÃO ficou passiva', resumo?.sessaoPassiva === false);
+    checar('e que nenhum anúncio valeu', resumo?.anunciosPassivos === 0, `→ ${resumo?.anunciosPassivos}`);
+    console.log('');
+  }
+
+  // 7: o reforço do anúncio passivo conserta uma primeira tentativa que falhou
+  {
+    reiniciar();
+    queryQuebrado = true;
+    console.log('▶ reforço do anúncio passivo: a falha do login é consertada na volta seguinte');
+
+    await whatsapp.conectar();
+    const sock = socketsCriados[0];
+    checar('a primeira tentativa foi feita (e falhou)', sock.iqs.length >= 1, `→ ${sock.iqs.length}`);
+
+    // O servidor volta a responder. O reforço (PASSIVO_REANUNCIO_MS=150 no teste) precisa
+    // anunciar de novo por conta própria, sem depender de conexão nova. Antes dele, a conta
+    // passaria a janela INTEIRA como sessão ativa e o resumo só registraria o fato.
+    queryQuebrado = false;
+    const tentativasAntes = sock.iqs.length;
+    await new Promise(r => setTimeout(r, 450));
+
+    checar('o anúncio foi repetido sozinho', sock.iqs.length > tentativasAntes, `→ ${sock.iqs.length} tentativa(s)`);
+    const resumo = await whatsapp.encerrarSessao();
+    checar('o resumo registra a sessão como passiva', resumo?.sessaoPassiva === true);
+    checar('com os anúncios que valeram contados', (resumo?.anunciosPassivos || 0) >= 1, `→ ${resumo?.anunciosPassivos}`);
+
+    // Depois de fechar, o relógio do reforço precisa ter morrido junto: um intervalo órfão
+    // ficaria consultando um socket encerrado até o fim do processo.
+    const depoisDeFechar = sock.iqs.length;
+    await new Promise(r => setTimeout(r, 350));
+    checar('o reforço parou junto com a sessão', sock.iqs.length === depoisDeFechar, `→ ${sock.iqs.length}`);
     console.log('');
   }
 

@@ -52,7 +52,10 @@ tempo só uma estava:
 Ou seja: o bot dizia "indisponível" na presença e, milissegundos depois, se declarava a sessão
 **ativa** da conta. Por isso o `anunciarSessaoPassiva` manda o iq inverso logo após o
 `connection: open`, e a ordem na rede fica `active` (lib) → `unavailable` (lib) → `passive`
-(nosso).
+(nosso). O anúncio ainda é **reforçado** a cada `PASSIVO_REANUNCIO_MS` (5 min) enquanto a
+conexão viver: se o primeiro iq falhar, a volta seguinte conserta em vez de deixar a conta
+ativa pela janela inteira, e qualquer reativação vinda do servidor no meio dos ~50 minutos de
+socket aberto é desfeita. O resumo registra o total em `anunciosPassivos`.
 
 Ficar conectado deixou de ser inofensivo quando o tempo de socket aberto cresceu: somando a
 conexão na subida (~5 min), a janela de monitoramento (até 36 min) e a janela elástica de
@@ -268,6 +271,7 @@ TZ=America/Sao_Paulo
 | `LOTE_SESSOES` | `50` | Tamanho do lote acima. Um aparelho com erro derruba o lote inteiro, por isso é fatiado |
 | `PREPARO_TIMEOUT_MS` | `45000` | Prazo do preparo do grupo. Estourou, para onde está e deixa o envio seguir |
 | `PASSIVO_TIMEOUT_MS` | `10000` | Prazo do iq que devolve a sessão ao estado passivo. Ver "Notificação no celular do dono" |
+| `PASSIVO_REANUNCIO_MS` | `300000` | Intervalo do reforço desse anúncio enquanto a conexão viver. Conserta um primeiro iq que falhou e desfaz reativação vinda do servidor |
 | `TETO_VIDA_MS` | `5400000` | Teto de vida do processo (90 min). Rede de segurança: se nada encerrou o processo até aí, ele se encerra sozinho em vez de passar a noite com o socket aberto segurando a sessão da conta |
 | `YOUTUBE_TIMEOUT_MS` | `15000` | Prazo de cada chamada à API do YouTube. Sem ele, uma conexão pendurada congelava o monitoramento e o desligamento nunca acontecia |
 | `BAILEYS_LOG_LEVEL` | `warn` | Nível do log que vai para o stdout (o `fly logs`) |

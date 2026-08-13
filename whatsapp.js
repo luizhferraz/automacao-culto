@@ -43,6 +43,8 @@ const ESPERA_APOS_CONECTAR_MS = Number(process.env.ESPERA_APOS_CONECTAR_MS || 30
 
 // Prazo do iq que devolve a sessão para o estado passivo. Ver anunciarSessaoPassiva.
 const PRAZO_PASSIVO_MS = Number(process.env.PASSIVO_TIMEOUT_MS || 10000);
+// Intervalo do reforço desse anúncio enquanto a conexão viver. Ver anunciarSessaoPassiva.
+const PASSIVO_REANUNCIO_MS = Number(process.env.PASSIVO_REANUNCIO_MS || 300000);
 
 // ── Sessões de sinal forçadas antes do envio ─────────────────────────────────
 // Desligado por padrão. Ver o comentário em garantirSessoesFrescas para o porquê.
@@ -359,6 +361,15 @@ async function prepararGrupo(s, chatId, limite) {
  * O iq inverso vai DEPOIS do `connection: open`, que o Baileys emite depois do `active`, e
  * depois do `unavailable`, porque o ouvinte do chats.js foi registrado antes deste. A ordem
  * na rede fica: active (lib) → unavailable (lib) → passive (aqui).
+ *
+ * E o anúncio não é único: ele se repete a cada PASSIVO_REANUNCIO_MS enquanto a conexão
+ * viver. Um anúncio único tinha duas fraquezas, e as duas terminavam do mesmo jeito — a
+ * conta com um aparelho vinculado ativo pela janela inteira e o celular do dono mudo. Se o
+ * único iq falhasse (prazo, rede ruim no segundo errado), o resumo registrava
+ * sessaoPassiva: false e ninguém tentava de novo. E se qualquer coisa do lado do servidor
+ * devolvesse a sessão ao estado ativo no meio dos ~50 minutos de socket aberto, não havia
+ * quem desfizesse. O reforço é idempotente e barato: é o mesmo iq que o WhatsApp Web manda
+ * a cada troca de foco da aba, muitas vezes por sessão.
  */
 async function anunciarSessaoPassiva(s) {
   try {
@@ -367,11 +378,14 @@ async function anunciarSessaoPassiva(s) {
       attrs: { to: S_WHATSAPP_NET, xmlns: 'passive', type: 'set' },
       content: [{ tag: 'passive', attrs: {} }],
     }, PRAZO_PASSIVO_MS);
+    s.anunciosPassivos++;
+    // Loga só a virada: o reforço repete o anúncio a cada poucos minutos, e a mesma linha
+    // dezenas de vezes esconderia as que importam.
+    if (!s.passiva) console.log('[WhatsApp] 🔕 Sessão anunciada como passiva.');
     s.passiva = true;
-    console.log('[WhatsApp] 🔕 Sessão anunciada como passiva.');
   } catch (err) {
-    // Nunca fatal: no pior caso o celular fica sem notificação durante a janela, e o link do
-    // culto, que é a razão de o bot existir, sai do mesmo jeito. O resumo registra a falha.
+    // Nunca fatal: no pior caso o celular fica sem notificação até a próxima volta do
+    // reforço, e o link do culto, que é a razão de o bot existir, sai do mesmo jeito.
     console.warn('[WhatsApp] Não consegui anunciar a sessão como passiva:', err.message);
   }
 }
@@ -408,6 +422,8 @@ async function abrirSessao() {
       ultimaAtividade: 0,
       conectadoEm: null,
       passiva: false,
+      anunciosPassivos: 0,
+      relogioPassivo: null,
     };
 
     const registrarReenvio = (id) => {
@@ -483,13 +499,23 @@ async function abrirSessao() {
         // Antes da pausa de acomodação, para a conta passar o mínimo de tempo possível
         // marcada como sessão ativa. O anúncio nunca rejeita.
         anunciarSessaoPassiva(nova)
-          .then(() => esperar(ESPERA_APOS_CONECTAR_MS))
+          .then(() => {
+            // O reforço fica armado pela vida da conexão: conserta um primeiro anúncio que
+            // falhou e desfaz qualquer reativação vinda do servidor no meio da janela.
+            // unref: este relógio jamais pode ser o que mantém o processo vivo.
+            nova.relogioPassivo = setInterval(() => {
+              if (nova.viva) anunciarSessaoPassiva(nova);
+            }, PASSIVO_REANUNCIO_MS);
+            nova.relogioPassivo.unref?.();
+            return esperar(ESPERA_APOS_CONECTAR_MS);
+          })
           .then(() => finalizar(null));
         return;
       }
 
       if (connection === 'close') {
         nova.viva = false;
+        clearInterval(nova.relogioPassivo);
         if (sessao === nova) sessao = null;
 
         const codigo = new Boom(lastDisconnect?.error)?.output?.statusCode;
@@ -630,6 +656,9 @@ async function fecharSessao(s, piso, teto) {
     // Falso aqui significa que a conta passou a janela inteira com um aparelho vinculado
     // ativo, e é a primeira coisa a conferir se o celular voltar a não notificar.
     sessaoPassiva: s.passiva,
+    // Quantos anúncios valeram, contando o do login e as voltas do reforço. Separa "anunciou
+    // uma vez e ficou nisso" de "o reforço precisou trabalhar".
+    anunciosPassivos: s.anunciosPassivos,
     envios: s.envios,
     grupo: s.grupo,
     confirmacoes: { total: s.confirmacoes.size, jids: [...s.confirmacoes] },
@@ -648,6 +677,10 @@ async function fecharSessao(s, piso, teto) {
   // aconteceu de o resumo se perder exatamente na execução mais interessante de todas.
   // Depois da drenagem ele é regravado com os números finais.
   diagnostico.gravarResumo(montarResumo());
+
+  // O reforço do anúncio passivo morre junto com a conexão. Durante a janela de reenvio
+  // acima ele continua rodando de propósito: o socket ainda está aberto.
+  clearInterval(s.relogioPassivo);
 
   // O end() do Baileys é async: fecha o websocket, percorre os handlers de fim e só então
   // emite o connection.update de fechamento. Sem await, o drenar abaixo correria antes
