@@ -1,0 +1,64 @@
+name: Diagnostico da sessao
+
+# Manual. Serve para responder, sem a maquina do dono, as duas perguntas que decidem o
+# diagnostico de notificacao no celular:
+#
+#   1. A maquina esta presa de pe fora de janela de culto? Maquina ligada = socket aberto =
+#      um aparelho vinculado segurando a sessao da conta.
+#   2. O resumo da ultima janela registrou `sessaoPassiva: true`? Falso significa que a conta
+#      passou a janela inteira marcada como sessao ativa e o celular ficou sem push.
+#
+# O job termina SEMPRE parando a maquina, que e o estado correto fora das janelas: quem a
+# liga e o cron-job.org, minutos antes de cada culto.
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostico:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      APP: culto-automacao
+      # Mesma maquina do start-bot.yml e do deploy.yml.
+      MAQUINA: 148ee339cee098
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Estado atual das maquinas
+        run: |
+          flyctl machine list --app "$APP"
+          echo "──── eventos recentes da maquina ────"
+          flyctl machine status "$MAQUINA" --app "$APP"
+
+      - name: Subir a maquina se estiver parada (necessario para ler o volume)
+        run: |
+          ESTADO=$(flyctl machine list --app "$APP" --json | jq -r --arg id "$MAQUINA" '.[] | select(.id==$id) | .state')
+          echo "Estado inicial: $ESTADO"
+          if [ "$ESTADO" != "started" ]; then
+            flyctl machine start "$MAQUINA" --app "$APP"
+            sleep 20
+          fi
+
+      - name: Resumos das ultimas janelas
+        run: |
+          flyctl ssh console --app "$APP" --machine "$MAQUINA" -C "ls -la /data/diagnostico"
+          for f in $(flyctl ssh console --app "$APP" --machine "$MAQUINA" -C "ls /data/diagnostico" | tr -d '\r' | grep '^resumo-' | sort | tail -n 4); do
+            echo "══════════ $f ══════════"
+            flyctl ssh console --app "$APP" --machine "$MAQUINA" -C "cat /data/diagnostico/$f" || true
+          done
+
+      - name: Fim dos logs das duas ultimas janelas
+        run: |
+          for f in $(flyctl ssh console --app "$APP" --machine "$MAQUINA" -C "ls /data/diagnostico" | tr -d '\r' | grep -v '^resumo-' | grep '\.log$' | sort | tail -n 2); do
+            echo "══════════ $f ══════════"
+            flyctl ssh console --app "$APP" --machine "$MAQUINA" -C "tail -c 6000 /data/diagnostico/$f" || true
+          done
+
+      # Roda mesmo se um passo acima falhar: maquina de pe fora de janela e exatamente o
+      # estado que faz o celular parar de notificar.
+      - name: Devolver a maquina ao estado parado
+        if: always()
+        run: |
+          flyctl machine stop "$MAQUINA" --app "$APP" || true
+          flyctl machine list --app "$APP"
