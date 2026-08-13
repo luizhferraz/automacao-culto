@@ -8,6 +8,7 @@ on:
 jobs:
   publicar:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       APP: culto-automacao
@@ -19,8 +20,38 @@ jobs:
 
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
+      # Antes de trocar a imagem, registra o que estava rodando. Máquina de pé fora de
+      # janela de culto é sintoma, não estado normal: socket aberto é um aparelho vinculado
+      # segurando a sessão da conta, e é a primeira hipótese quando o celular do dono para
+      # de receber notificação. O histórico de eventos mostra desde quando e com que
+      # exit_code ela parou (ou não parou).
+      - name: Estado da máquina antes do deploy
+        run: |
+          flyctl machine list --app "$APP"
+          echo "──── eventos recentes ────"
+          flyctl machine status "$MAQUINA" --app "$APP" || true
+
       - name: Publicar imagem
         run: flyctl deploy --remote-only --app "$APP"
+
+      # O deploy deixa a máquina de pé, então este é o momento em que o volume está
+      # acessível. Os resumos respondem as perguntas que decidem o diagnóstico de
+      # notificação: `sessaoPassiva` (falso = a conta passou a janela inteira marcada como
+      # sessão ativa) e os números de reenvio da última janela.
+      - name: Resumos das últimas janelas no volume
+        run: |
+          flyctl ssh console --app "$APP" --machine "$MAQUINA" -C "ls -la /data/diagnostico" || true
+          for f in $(flyctl ssh console --app "$APP" --machine "$MAQUINA" -C "ls /data/diagnostico" 2>/dev/null | tr -d '\r' | grep '^resumo-' | sort | tail -n 4); do
+            echo "══════════ $f ══════════"
+            flyctl ssh console --app "$APP" --machine "$MAQUINA" -C "cat /data/diagnostico/$f" || true
+          done
+
+      - name: Fim dos logs das duas últimas janelas
+        run: |
+          for f in $(flyctl ssh console --app "$APP" --machine "$MAQUINA" -C "ls /data/diagnostico" 2>/dev/null | tr -d '\r' | grep -v '^resumo-' | grep '\.log$' | sort | tail -n 2); do
+            echo "══════════ $f ══════════"
+            flyctl ssh console --app "$APP" --machine "$MAQUINA" -C "tail -c 6000 /data/diagnostico/$f" || true
+          done
 
       # O deploy sobe a máquina para aplicar a imagem. Fora da janela do culto ela precisa
       # voltar a ficar parada: quem liga é o cron-job.org, minutos antes de cada culto, e o
@@ -28,6 +59,7 @@ jobs:
       # Socket aberto à toa é o que faz o WhatsApp marcar um aparelho vinculado como ativo e
       # parar de notificar o celular do dono — o problema que este projeto acabou de corrigir.
       - name: Devolver a máquina ao estado parado
+        if: always()
         run: |
           flyctl machine stop "$MAQUINA" --app "$APP" || true
           flyctl machine list --app "$APP"
