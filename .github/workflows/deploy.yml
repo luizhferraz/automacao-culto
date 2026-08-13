@@ -34,10 +34,24 @@ jobs:
       - name: Publicar imagem
         run: flyctl deploy --remote-only --app "$APP"
 
-      # O deploy deixa a máquina de pé, então este é o momento em que o volume está
-      # acessível. Os resumos respondem as perguntas que decidem o diagnóstico de
-      # notificação: `sessaoPassiva` (falso = a conta passou a janela inteira marcada como
-      # sessão ativa) e os números de reenvio da última janela.
+      # O deploy atualiza a máquina parada SEM ligá-la, e ler o volume exige máquina de pé.
+      # Subir aqui também serve de teste ao vivo: o log de subida mostra o bot conectando e
+      # anunciando a sessão como passiva, que é a correção publicada ontem.
+      - name: Subir a máquina para ler o volume
+        run: |
+          ESTADO=$(flyctl machine list --app "$APP" --json | jq -r --arg id "$MAQUINA" '.[] | select(.id==$id) | .state')
+          echo "Estado após o deploy: $ESTADO"
+          if [ "$ESTADO" != "started" ]; then
+            flyctl machine start "$MAQUINA" --app "$APP"
+          fi
+          sleep 30
+
+      - name: Log de subida (conexão e anúncio de sessão passiva)
+        run: timeout 30 flyctl logs --app "$APP" --no-tail || true
+
+      # Os resumos respondem as perguntas que decidem o diagnóstico de notificação:
+      # `sessaoPassiva` (falso = a conta passou a janela inteira marcada como sessão ativa)
+      # e os números de reenvio da última janela.
       - name: Resumos das últimas janelas no volume
         run: |
           flyctl ssh console --app "$APP" --machine "$MAQUINA" -C "ls -la /data/diagnostico" || true
