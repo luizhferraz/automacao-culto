@@ -42,6 +42,8 @@ process.env.RETRY_GRACE_SIGTERM_MS = '50';
 process.env.ESPERA_APOS_CONECTAR_MS = '0';
 process.env.CONEXAO_TIMEOUT_MS = '2000';
 process.env.PASSIVO_REANUNCIO_MS = '150';  // reforço do anúncio passivo, rápido para o teste
+process.env.VERSAO_TIMEOUT_MS = '200';     // prazo da busca da versão do WhatsApp Web
+process.env.ENVIO_TIMEOUT_MS = '600';      // prazo de ponta a ponta de um envio
 process.env.BAILEYS_LOG_LEVEL = 'silent';
 
 const FORCANDO = process.env.FORCAR_SESSOES === '1';
@@ -59,6 +61,11 @@ let comportamentoConexao = 'abre';
 let metadataQuebrado = false;
 // Faz o query de iq falhar, para provar que o anúncio de sessão passiva nunca segura o link.
 let queryQuebrado = false;
+// Pendura o sendMessage para sempre. Reproduz o travamento silencioso do domingo 16/08, em
+// que a janela inteira congelou dentro de um await que nunca voltou.
+let envioPendurado = false;
+// Pendura a busca da versão do WhatsApp Web, que no Baileys é um fetch sem prazo nenhum.
+let versaoPendurada = false;
 let gravacoesConcluidas = 0;
 let gravacoesIniciadas = 0;
 // Categorias que chegaram ao armazenamento de verdade, depois de passar pelo whatsapp.js.
@@ -126,6 +133,7 @@ function criarSocketFalso(opcoes) {
       sock.sessoesForcadas.push({ quantidade: jids.length, force: !!force });
     },
     sendMessage: async (jid, conteudo) => {
+      if (envioPendurado) return new Promise(() => {});
       const id = `MSGFALSA${++contadorId}`;
 
       // Reproduz o que o Baileys faz no ramo de grupo do relayMessage: lê a memória de
@@ -209,7 +217,10 @@ require.cache[CAMINHO_BAILEYS] = {
     ...baileysReal,
     default: criarSocketFalso,
     useMultiFileAuthState: async () => ({ state: criarEstadoFalso(), saveCreds: async () => {} }),
-    fetchLatestBaileysVersion: async () => ({ version: [2, 3000, 0] }),
+    fetchLatestBaileysVersion: async () => {
+      if (versaoPendurada) return new Promise(() => {});
+      return { version: [2, 3000, 0] };
+    },
   },
 };
 
@@ -235,9 +246,23 @@ function reiniciar() {
   armazenamento = {};
   metadataQuebrado = false;
   queryQuebrado = false;
+  envioPendurado = false;
+  versaoPendurada = false;
 }
 
 const bytesDe = (m) => Buffer.from(proto.Message.encode(proto.Message.fromObject(m)).finish());
+
+// Espera uma promessa com limite DO TESTE, e diz o que aconteceu com ela.
+//
+// Existe para os cenários de travamento não dependerem do prazo do código para terminar: sem
+// isto, remover a correção não faz o teste ficar vermelho, faz ele PENDURAR — que é o mesmo
+// sintoma do bug e o pior jeito de descobrir uma regressão.
+function comLimiteDoTeste(promessa, ms) {
+  return Promise.race([
+    promessa.then(valor => ({ resolveu: valor }), erro => ({ rejeitou: erro })),
+    new Promise(r => setTimeout(() => r({ travou: true }), ms)),
+  ]);
+}
 
 // ── Cenários ─────────────────────────────────────────────────────────────────
 async function main() {
@@ -703,6 +728,87 @@ async function main() {
       gravacoesIniciadas > 0 && gravacoesConcluidas === gravacoesIniciadas,
       `→ ${gravacoesConcluidas}/${gravacoesIniciadas}`
     );
+    console.log('');
+  }
+
+  // ── O travamento silencioso do domingo 16/08 ───────────────────────────────
+  // Nos três cenários abaixo, o comportamento certo é sempre o mesmo: virar erro depressa.
+  // Quem chama é o laço do scheduler, que só agenda a tentativa seguinte quando esta volta —
+  // um await que nunca volta não atrasa um envio, congela a janela inteira em silêncio.
+
+  // 12: envio pendurado precisa virar erro, e não segurar a janela para sempre
+  {
+    reiniciar();
+    console.log('▶ envio pendurado: o prazo transforma travamento em erro, que o laço retenta');
+    envioPendurado = true;
+
+    const inicio = Date.now();
+    const r = await comLimiteDoTeste(whatsapp.enviarMensagem('grupo@g.us', 'link do culto'), 3000);
+    const decorrido = Date.now() - inicio;
+
+    checar('o envio não pendurou a janela', !r.travou);
+    checar('e virou erro, que o laço sabe tratar', !!r.rejeitou, `→ ${r.rejeitou?.message || 'não rejeitou'}`);
+    checar('dentro do prazo', decorrido < 1500, `→ ${decorrido}ms`);
+
+    // A tentativa seguinte, com o servidor de volta, precisa conseguir enviar: o prazo não
+    // pode ter deixado a sessão num estado que impeça o próximo envio.
+    envioPendurado = false;
+    const seguinte = await comLimiteDoTeste(whatsapp.enviarMensagem('grupo@g.us', 'link do culto'), 3000);
+    checar('a tentativa seguinte enviou normalmente', !!seguinte.resolveu, `→ ${seguinte.resolveu || seguinte.rejeitou?.message}`);
+    await whatsapp.encerrarSessao();
+    console.log('');
+  }
+
+  // 13: a busca da versão do WhatsApp Web não pode pendurar a conexão
+  {
+    reiniciar();
+    console.log('▶ versão do WhatsApp Web pendurada: conecta com a versão embutida, sem travar');
+    versaoPendurada = true;
+
+    const inicio = Date.now();
+    const r = await comLimiteDoTeste(whatsapp.enviarMensagem('grupo@g.us', 'link do culto'), 3000);
+    const decorrido = Date.now() - inicio;
+
+    checar('o link saiu mesmo assim', !!r.resolveu, `→ ${r.resolveu || r.rejeitou?.message || 'travou'}`);
+    checar('sem esperar a busca da versão', decorrido < 1500, `→ ${decorrido}ms`);
+    await whatsapp.encerrarSessao();
+    console.log('');
+  }
+
+  // 14: dois pedidos ao mesmo tempo não podem abrir dois sockets para a mesma conta
+  {
+    reiniciar();
+    console.log('▶ conexão da subida ainda em curso quando o envio chega: um socket, não dois');
+
+    // O index.js não espera mais o conectar da subida terminar, justamente para uma conexão
+    // lenta não impedir a janela de acontecer. Isso põe os dois caminhos em paralelo.
+    const [, id] = await Promise.all([
+      whatsapp.conectar('grupo@g.us'),
+      whatsapp.enviarMensagem('grupo@g.us', 'link do culto'),
+    ]);
+
+    checar('abriu um socket só', socketsCriados.length === 1, `→ ${socketsCriados.length}`);
+    checar('e o link saiu', !!id, `→ ${id}`);
+    await whatsapp.encerrarSessao();
+    console.log('');
+  }
+
+  // 15: encerrar sem sessão viva precisa deixar evidência no volume
+  {
+    reiniciar();
+    console.log('▶ encerramento sem sessão: grava resumo em vez de sair calado');
+
+    // Exatamente o estado do domingo 16/08 às 19h09: o socket da subida caiu, nada foi
+    // enviado, e `sessao` já era nula quando o SIGTERM chegou. O processo saiu em 677ms sem
+    // gravar resumo, e a janela mais interessante do dia foi a única sem evidência nenhuma.
+    const arquivo = path.join(process.env.DIAG_DIR, `resumo-${require('../diagnostico').CARIMBO_EXECUCAO}.json`);
+    fs.rmSync(arquivo, { force: true });
+
+    await whatsapp.encerrarSessao();
+
+    checar('resumo gravado mesmo sem sessão', fs.existsSync(arquivo));
+    const resumo = fs.existsSync(arquivo) ? JSON.parse(fs.readFileSync(arquivo, 'utf-8')) : {};
+    checar('e ele diz que não houve sessão', resumo.semSessao === true, `→ ${resumo.semSessao}`);
     console.log('');
   }
 
