@@ -82,17 +82,16 @@ async function main() {
     process.exit(falhou ? 1 : 0);
   }
 
-  // Conecta já na subida, sem esperar a hora do envio. A máquina liga cerca de 5 min antes
-  // do culto, e esse tempo era desperdiçado com o socket fechado. Conectando agora, a fila de
-  // pedidos de reenvio que o WhatsApp acumulou durante a semana é entregue e atendida com a
-  // conexão ociosa, o que conserta quem ficou travado no culto anterior antes do envio de hoje.
-  // O grupo vai junto para o preparo das sessões também caber nesta folga, em vez de atrasar
-  // o link na hora do envio.
-  await conectar(config.nomeGrupo);
-
+  // ORDEM IMPORTA: primeiro o que garante que a janela acontece e que o processo morre,
+  // depois o que depende da rede.
+  //
+  // Enquanto o `conectar` vinha antes, ele era um ponto único de falha silencioso para o dia
+  // inteiro: qualquer coisa pendurada ali — e o Baileys busca a versão do WhatsApp Web com um
+  // fetch sem prazo — impedia o cron de ser registrado E o teto de vida de ser armado. O
+  // resultado seria a máquina de pé, sem enviar nada e sem se encerrar, exatamente o estado
+  // que segura a sessão da conta e emudece o celular do dono. Nada aqui embaixo depende do
+  // resultado da conexão, então não há motivo para esperá-la.
   iniciarAgendamentos(config);
-  console.log('\n✅ Bot rodando! Aguardando os horários agendados...');
-  console.log('   (Mantenha este terminal aberto)\n');
 
   // Os unref garantem que estes relógios nunca sejam o que mantém o processo vivo: no
   // ciclo normal o desligar do scheduler sai muito antes e eles simplesmente não disparam.
@@ -104,6 +103,21 @@ async function main() {
     setTimeout(() => process.exit(1), 60000).unref();
   }, TETO_VIDA_MS);
   relogioTeto.unref();
+
+  console.log('\n✅ Bot rodando! Aguardando os horários agendados...');
+  console.log('   (Mantenha este terminal aberto)\n');
+
+  // Conecta já na subida, sem esperar a hora do envio. A máquina liga cerca de 5 min antes
+  // do culto, e esse tempo era desperdiçado com o socket fechado. Conectando agora, a fila de
+  // pedidos de reenvio que o WhatsApp acumulou durante a semana é entregue e atendida com a
+  // conexão ociosa, o que conserta quem ficou travado no culto anterior antes do envio de hoje.
+  // O grupo vai junto para o preparo das sessões também caber nesta folga, em vez de atrasar
+  // o link na hora do envio.
+  //
+  // Sem await: é aquecimento, não pré-requisito. Se a hora do envio chegar antes de ele
+  // terminar, o abrirSessao do envio espera a MESMA abertura em vez de abrir um segundo
+  // socket para a conta.
+  conectar(config.nomeGrupo);
 }
 
 // O Fly manda SIGTERM quando para a máquina. Sem tratar o sinal, o processo morre no meio

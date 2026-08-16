@@ -28,11 +28,25 @@ Se o primeiro envio do aviso falhar, o bot tenta de novo na tentativa seguinte, 
 
 **Ciclo automático (Fly.io + cron externo):**
 1. A máquina é ligada 5 min antes de cada janela
-2. O bot conecta no WhatsApp já na subida e atende os pedidos de reenvio acumulados na semana
-3. Monitora o YouTube a cada 1 minuto
-4. Ao encontrar a live → envia o link → encerra o monitoramento
-5. Mantém a conexão de pé enquanto chegarem pedidos de reenvio (veja abaixo)
-6. Ao fim da janela → a máquina se desliga automaticamente
+2. O bot registra os horários e arma o teto de vida **antes** de qualquer coisa que dependa da rede
+3. Conecta no WhatsApp já na subida e atende os pedidos de reenvio acumulados na semana
+4. Monitora o YouTube a cada 1 minuto
+5. Ao encontrar a live → envia o link → encerra o monitoramento
+6. Mantém a conexão de pé enquanto chegarem pedidos de reenvio (veja abaixo)
+7. Ao fim da janela → a máquina se desliga automaticamente
+
+A ordem do passo 2 não é estética. Enquanto a conexão da subida era aguardada antes do
+registro dos horários, ela era um **ponto único de falha silencioso para o dia inteiro**:
+qualquer coisa pendurada ali impedia ao mesmo tempo o agendamento da janela e o armamento do
+teto de vida. O resultado seria a máquina de pé, sem enviar nada e sem se encerrar — que é
+exatamente o estado que segura a sessão da conta e emudece o celular do dono. Hoje a conexão
+da subida é aquecimento, não pré-requisito: ela não é aguardada, e se a hora do envio chegar
+antes de ela terminar, o envio espera a **mesma** abertura em vez de abrir um segundo socket.
+
+**Se a máquina subir atrasada**, depois do minuto agendado, o cron daquele dia já passou e não
+dispara mais. O bot detecta isso na subida e **recupera a janela**, com as tentativas
+descontadas do atraso (para o desligamento continuar no mesmo horário) e o aviso de atraso
+adiantado. Sem isso, subir 19h01 num domingo significava passar a noite de pé sem enviar nada.
 
 ### Notificação no celular do dono
 
@@ -190,9 +204,19 @@ em `/data/diagnostico/`:
   `Failed to encrypt for recipient` (quem ficou de fora, com o jid). A diferença entre as duas
   é a **lista nominal** de quem não recebeu. Tudo de nível `warn` para cima entra também.
 - `resumo-<carimbo>.json`: ids e horários dos envios, tamanho do grupo, quantos aparelhos,
-  quem confirmou entrega, quantos reenvios foram atendidos, quantas gravações falharam e
+  quem confirmou entrega, quantos reenvios foram atendidos, quantas gravações falharam,
   `sessaoPassiva` (falso significa que a conta passou a janela inteira com um aparelho
-  vinculado ativo, e o celular do dono provavelmente ficou sem notificação).
+  vinculado ativo, e o celular do dono provavelmente ficou sem notificação) e `notas`.
+- `notas` é a linha do tempo do que o **bot decidiu**, que é diferente do que a biblioteca
+  fez: início de cada janela, tentativas que falharam com o motivo, aviso de atraso enviado ou
+  não, e por que a janela terminou. Existe porque tudo o que o scheduler escreve vai para o
+  stdout, e o stdout morre junto com a máquina.
+
+O resumo é gravado **mesmo quando não houve sessão viva**, com `semSessao: true`. Antes, o
+encerramento sem sessão saía calado, e foi exatamente o que aconteceu no domingo 16/08: o
+socket da subida caiu antes da janela, nada foi enviado, o `sessao` já era nulo quando o
+SIGTERM chegou, o processo saiu em 677 ms — e a janela mais interessante do dia foi a **única
+sem resumo nenhum** no volume.
 
 O log é filtrado por uma lista de frases, não por nível. Medido em produção: em `debug` puro o
 Baileys escreve cerca de **1 MB por minuto** ao drenar a fila de uma semana, e quase tudo é
@@ -208,6 +232,37 @@ fly ssh console --app culto-automacao -C "ls -la /data/diagnostico"
 
 Se alguma gravação de estado de sinal falhar, o processo sai com código 1, o que aparece no
 `exit_code` do `fly machine status` mesmo depois que os logs somem.
+
+### Qual vídeo é o culto de agora
+
+Estreias (premieres) **não aparecem** nos filtros `live` e `upcoming` da API, então elas são
+achadas na playlist de uploads do canal (Método 3). O problema é decidir, entre os cultos que
+estão lá, qual pertence à janela que está rodando.
+
+A regra antiga era a hora do **upload** (`publishedAt`) nas últimas `filtroHoras`. Ela confunde
+duas coisas que numa estreia não têm relação nenhuma: quando o arquivo subiu e quando o culto
+acontece — o vídeo é gravado antes e agendado para tocar depois.
+
+Foi o que derrubou o domingo **16/08**: a estreia das 19h tinha sido publicada de manhã, o
+filtro da noite só aceitava upload das últimas 7h (desde ~12h), e o culto ficou **invisível**
+para o bot durante a janela inteira. Nas vezes anteriores em que isso apareceu, a resposta foi
+esticar o filtro (4h → 6h → 7h), o que só troca de erro: esticar o bastante para pegar a
+estreia publicada de manhã é esticar o bastante para mandar o culto **da manhã** à noite.
+
+Hoje a referência é o **horário marcado da transmissão** (`scheduledStartTime`, ou
+`actualStartTime` quando já começou), lido de `liveStreamingDetails` na mesma chamada ao
+`videos.list` que já era feita para separar live de estreia — ou seja, sem custo novo de quota.
+Com isso:
+
+- `filtroHoras` passa a significar **"há quanto tempo, no máximo, o culto pode ter começado"**,
+  e não mais a idade do arquivo;
+- existe um teto para o futuro (`ESTREIA_FUTURO_MIN`, 90 min), que corrige um erro silencioso
+  do outro lado: a estreia da noite costuma já estar agendada de manhã, e a regra antiga podia
+  mandar o link da noite na janela da manhã;
+- havendo mais de um culto na playlist, ganha o **mais próximo de agora**, que é o que separa o
+  da manhã do da noite sem nenhum ajuste manual de horas;
+- se o `videos.list` falhar, tudo **degrada para a regra antiga** (hora do upload), em vez de
+  deixar a janela sem link.
 
 ### Nota sobre YouTube API Quota
 
@@ -272,6 +327,9 @@ TZ=America/Sao_Paulo
 | `PREPARO_TIMEOUT_MS` | `45000` | Prazo do preparo do grupo. Estourou, para onde está e deixa o envio seguir |
 | `PASSIVO_TIMEOUT_MS` | `10000` | Prazo do iq que devolve a sessão ao estado passivo. Ver "Notificação no celular do dono" |
 | `PASSIVO_REANUNCIO_MS` | `300000` | Intervalo do reforço desse anúncio enquanto a conexão viver. Conserta um primeiro iq que falhou e desfaz reativação vinda do servidor |
+| `ENVIO_TIMEOUT_MS` | `120000` | Prazo de ponta a ponta de um envio. Existe para travamento virar erro (que o laço retenta) em vez de congelar a janela inteira em silêncio |
+| `VERSAO_TIMEOUT_MS` | `10000` | Prazo da busca da versão do WhatsApp Web. O Baileys faz esse `fetch` **sem timeout nenhum**, e ele roda antes de existir qualquer relógio de segurança |
+| `ESTREIA_FUTURO_MIN` | `90` | Quanto antes do horário marcado uma estreia já é aceita. Ver "Qual vídeo é o culto de agora" |
 | `TETO_VIDA_MS` | `5400000` | Teto de vida do processo (90 min). Rede de segurança: se nada encerrou o processo até aí, ele se encerra sozinho em vez de passar a noite com o socket aberto segurando a sessão da conta |
 | `YOUTUBE_TIMEOUT_MS` | `15000` | Prazo de cada chamada à API do YouTube. Sem ele, uma conexão pendurada congelava o monitoramento e o desligamento nunca acontecia |
 | `BAILEYS_LOG_LEVEL` | `warn` | Nível do log que vai para o stdout (o `fly logs`) |
@@ -399,13 +457,22 @@ Agradecemos a compreensão de todos! 🙏
 npm test
 ```
 
-São três suítes, todas rodando o código real com as dependências externas trocadas por
+São quatro suítes, todas rodando o código real com as dependências externas trocadas por
 dublês. Nenhuma delas toca no YouTube ou no WhatsApp de verdade.
 
 **`testes/simular-aviso.js`** exercita `monitorarAoVivo` com relógio simulado (sem esperar 36
 minutos). Cobre: aviso no minuto certo nas três janelas, aviso suprimido quando o link chega
 antes do prazo, aviso seguido do link quando ele chega depois, e reenvio sem duplicação quando
 o primeiro envio falha.
+
+**`testes/simular-youtube.js`** roda a regra real de escolha do vídeo, sem rede, com os **dois
+cultos do mesmo domingo** na playlist — o caso que qualquer ajuste de horas erra. Cobre: a
+estreia das 19h publicada de manhã sendo achada à noite (o bug de 16/08), a mesma playlist
+escolhendo o culto da manhã na janela da manhã, o culto da manhã **não** sendo reenviado à
+noite, live de verdade continuando a ser classificada como live pela duração `P0D`, e a queda
+para a regra antiga quando o `videos.list` falha. Cobre também a recuperação de janela
+perdida: máquina subindo atrasada é recuperada, e subindo no horário normal (ou dentro do
+próprio minuto do gatilho) **não** é, para não rodar a janela duas vezes.
 
 **`testes/simular-reenvio.js`** exercita o ciclo de vida da conexão em `whatsapp.js` com um
 socket falso, e roda duas vezes, com `FORCAR_SESSOES` desligado e ligado. Cobre: histórico
@@ -418,7 +485,11 @@ chega um pedido perto do fim do piso**, **o iq de sessão passiva saindo com o f
 o resumo de diagnóstico sendo gravado, as gravações do
 estado de sinal drenadas antes da saída, uma queda antes do envio virando erro em vez de
 sucesso silencioso, o `conectar()` da subida devolvendo `false` em vez de derrubar o processo,
-e as duas mensagens de uma mesma janela reaproveitando uma única conexão.
+e as duas mensagens de uma mesma janela reaproveitando uma única conexão. Cobre ainda os três
+travamentos silenciosos do domingo 16/08: **envio pendurado virando erro** (com a tentativa
+seguinte enviando normalmente), **a busca da versão do WhatsApp Web pendurada não impedindo o
+link de sair**, **a conexão da subida em curso não gerando um segundo socket** quando o envio
+chega junto, e o **resumo sendo gravado mesmo sem sessão viva**.
 
 **`testes/simular-diagnostico.js`** cobre o registro em disco: o filtro descartando o ruído do
 Baileys e preservando as linhas que identificam quem não recebeu, a poda tratando logs e
@@ -439,7 +510,7 @@ culto-automation/
 ├── whatsapp.js             # Conexão e envio via Baileys (sessão única por janela)
 ├── mensagens-enviadas.js   # Histórico em disco, usado para atender pedidos de reenvio
 ├── diagnostico.js          # Log filtrado e resumo por janela gravados no volume
-├── testes/                 # Aviso de atraso, ciclo de reenvio e registro em disco
+├── testes/                 # Aviso de atraso, escolha do vídeo, ciclo de reenvio e registro em disco
 ├── fly.toml                # Configuração do Fly.io
 ├── Dockerfile        # Imagem Docker (Node 20 Alpine)
 └── .github/

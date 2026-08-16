@@ -196,16 +196,56 @@ function logger() {
   return loggerCache;
 }
 
+/**
+ * Linha do tempo do que o bot DECIDIU, que é diferente do que a biblioteca do WhatsApp fez.
+ *
+ * O log filtrado só enxerga o Baileys, e o resumo só enxerga a sessão. No domingo 16/08 as
+ * duas coisas juntas não responderam a pergunta mais simples de todas — o bot chegou a
+ * procurar o vídeo? — porque tudo o que o scheduler escreve vai para o stdout, e o stdout
+ * morre junto com a máquina. Estas notas entram no resumo, que fica no volume.
+ *
+ * O teto existe porque isto é gravado a cada janela e não pode virar outro jeito de encher o
+ * disco: uma janela normal escreve poucas dezenas de linhas.
+ */
+const MAX_NOTAS = Number(process.env.DIAG_MAX_NOTAS || 200);
+const notasDaExecucao = [];
+
+function anotar(texto) {
+  if (notasDaExecucao.length >= MAX_NOTAS) return;
+  notasDaExecucao.push(`${new Date().toISOString()} ${texto}`);
+}
+
+function notas() {
+  return [...notasDaExecucao];
+}
+
+const caminhoDoResumo = () => path.join(DIR, `resumo-${CARIMBO_EXECUCAO}.json`);
+
 /** Resumo estruturado da janela, para responder na segunda-feira sem reconstituir nada. */
 function gravarResumo(resumo) {
   try {
     fs.mkdirSync(DIR, { recursive: true });
-    const arquivo = path.join(DIR, `resumo-${CARIMBO_EXECUCAO}.json`);
+    const arquivo = caminhoDoResumo();
     fs.writeFileSync(arquivo, JSON.stringify(resumo, null, 2));
     return arquivo;
   } catch (err) {
     console.warn(`[Diagnóstico] Não consegui gravar o resumo (${err.message}).`);
     return null;
+  }
+}
+
+/**
+ * Se esta execução já tem resumo no volume.
+ *
+ * Serve para o encerramento sem sessão não escrever por cima do resumo bom de uma sessão que
+ * já fechou direito — o SIGTERM do Fly chega depois do desligamento normal e passaria de novo
+ * por ali.
+ */
+function resumoExiste() {
+  try {
+    return fs.existsSync(caminhoDoResumo());
+  } catch {
+    return false;
   }
 }
 
@@ -218,4 +258,4 @@ function encerrar() {
   try { destino?.flushSync(); } catch { /* nada a fazer se já fechou */ }
 }
 
-module.exports = { logger, gravarResumo, encerrar, DIR, CARIMBO_EXECUCAO };
+module.exports = { logger, gravarResumo, resumoExiste, encerrar, anotar, notas, DIR, CARIMBO_EXECUCAO };

@@ -41,6 +41,12 @@ const GRACA_SIGTERM_MS = Number(process.env.RETRY_GRACE_SIGTERM_MS || 3000);
 const TIMEOUT_CONEXAO_MS = Number(process.env.CONEXAO_TIMEOUT_MS || 30000);
 const ESPERA_APOS_CONECTAR_MS = Number(process.env.ESPERA_APOS_CONECTAR_MS || 3000);
 
+// Prazo da consulta que busca a versão do WhatsApp Web antes de abrir o socket. Ver abrirSessao.
+const PRAZO_VERSAO_MS = Number(process.env.VERSAO_TIMEOUT_MS || 10000);
+
+// Prazo de ponta a ponta de um envio. Ver enviarMensagem.
+const PRAZO_ENVIO_MS = Number(process.env.ENVIO_TIMEOUT_MS || 120000);
+
 // Prazo do iq que devolve a sessão para o estado passivo. Ver anunciarSessaoPassiva.
 const PRAZO_PASSIVO_MS = Number(process.env.PASSIVO_TIMEOUT_MS || 10000);
 // Intervalo do reforço desse anúncio enquanto a conexão viver. Ver anunciarSessaoPassiva.
@@ -71,6 +77,31 @@ function comPrazo(promessa, ms, oQue) {
 // Sessão única por execução. Antes cada mensagem abria e fechava o próprio socket, o que
 // refazia as sessões de sinal do zero a cada envio e desperdiçava a janela de reenvio.
 let sessao = null;
+
+// Abertura em curso. Sem isto, dois pedidos simultâneos (a conexão da subida ainda
+// terminando quando o cron dispara, por exemplo) criariam DOIS sockets para a mesma conta:
+// o segundo derruba o primeiro no servidor, e o envio sai por um socket que já está morrendo.
+let abertura = null;
+
+/**
+ * Busca a versão do WhatsApp Web, sem poder pendurar a subida.
+ *
+ * O fetchLatestBaileysVersion baixa um arquivo do raw.githubusercontent.com com `fetch` sem
+ * timeout nenhum (Utils/generics.js), e ele é aguardado dentro do abrirSessao ANTES de existir
+ * qualquer relógio de segurança. Uma conexão pendurada ali congela o envio inteiro sem deixar
+ * rastro: o socket nunca é criado, então nem o log da biblioteca registra alguma coisa.
+ *
+ * A própria função já devolve a versão embutida no pacote quando a busca falha, então cortar
+ * pelo prazo não tem custo: no pior caso o bot conecta com a versão que veio no npm.
+ */
+async function versaoDoWhatsApp() {
+  try {
+    return await comPrazo(fetchLatestBaileysVersion(), PRAZO_VERSAO_MS, 'busca da versão do WhatsApp');
+  } catch (err) {
+    console.warn(`[WhatsApp] ${err.message}; seguindo com a versão embutida no pacote.`);
+    return {};
+  }
+}
 
 /**
  * Descarta o tráfego que não é do grupo de avisos, antes de ele entrar na fila.
@@ -390,9 +421,21 @@ async function anunciarSessaoPassiva(s) {
   }
 }
 
+// Uma abertura de cada vez. Quem chegar no meio de uma abertura em curso espera por ela em
+// vez de começar outra.
 async function abrirSessao() {
   if (sessao && sessao.viva) return sessao;
+  if (abertura) return abertura;
 
+  abertura = abrirSessaoNova();
+  try {
+    return await abertura;
+  } finally {
+    abertura = null;
+  }
+}
+
+async function abrirSessaoNova() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
   if (!state.creds.me) {
@@ -401,7 +444,7 @@ async function abrirSessao() {
 
   await limparMemoriaDeChave();
 
-  const { version } = await fetchLatestBaileysVersion();
+  const { version } = await versaoDoWhatsApp();
   const { salvarCreds, drenar, contarFalhas } = rastrearGravacoes(state, saveCreds);
 
   return new Promise((resolve, reject) => {
@@ -571,8 +614,29 @@ async function conectar(chatId) {
   }
 }
 
-// Envia e devolve o id da mensagem. Não desconecta: quem fecha é o encerrarSessao.
+/**
+ * Envia e devolve o id da mensagem. Não desconecta: quem fecha é o encerrarSessao.
+ *
+ * O prazo de ponta a ponta existe porque quem chama é o laço do scheduler, que só agenda a
+ * tentativa seguinte depois que esta volta. Um await que nunca volta aqui não atrasa um envio:
+ * congela a janela INTEIRA, em silêncio. Foi assim no domingo 16/08 — depois que o socket da
+ * subida caiu, nem o link nem o aviso de atraso saíram, e a máquina passou dez minutos sem
+ * escrever uma linha sequer no log.
+ *
+ * O prazo é folgado de propósito (2 min contra tentativas de 1 em 1 min): ele não existe para
+ * apressar envio lento, e sim para transformar travamento permanente em erro, que o laço
+ * registra e tenta de novo no minuto seguinte.
+ *
+ * O race não cancela o envio de baixo, então um envio que estourou o prazo e depois completa
+ * pode virar link repetido no grupo. É o lado certo do risco: link duplicado é chato, link
+ * nenhum é o bot não ter feito o trabalho dele. E o envio tardio ainda registra a mensagem no
+ * histórico, que é o que atende os pedidos de reenvio.
+ */
 async function enviarMensagem(chatId, mensagem) {
+  return comPrazo(enviarAgora(chatId, mensagem), PRAZO_ENVIO_MS, `envio para ${chatId}`);
+}
+
+async function enviarAgora(chatId, mensagem) {
   const s = await abrirSessao();
 
   if (chatId.endsWith('@g.us')) {
@@ -670,6 +734,10 @@ async function fecharSessao(s, piso, teto) {
     // a fila levava a janela inteira para drenar e os pedidos de reenvio nunca eram lidos.
     nosIgnorados: s.ignorados,
     falhasDeGravacao: s.contarFalhas(),
+    // O que o scheduler viveu nesta execução: início e fim de cada janela, buscas vazias,
+    // envios que falharam. É o que separa "o bot não achou o vídeo" de "o bot nem chegou a
+    // procurar", que era indistinguível olhando só para os números acima.
+    notas: diagnostico.notas(),
   });
 
   // Grava ANTES de fechar e drenar. O drenar pode demorar quando a janela atendeu muitos
@@ -713,7 +781,26 @@ async function encerrarSessao({ graca = GRACA_MINIMA_MS, teto = GRACA_MAXIMA_MS 
   }
 
   const s = sessao;
-  if (!s) return;
+
+  // Sem sessão viva não há o que fechar, mas ainda há o que registrar. Encerrar em silêncio
+  // aqui foi o que deixou o domingo 16/08 sem NENHUMA evidência: o socket da subida tinha
+  // caído, a janela inteira passou sem enviar nada, e como `sessao` já era nula o processo
+  // saiu na hora e não gravou resumo. A janela mais interessante do dia foi a única sem
+  // resumo no volume. Só grava se ninguém tiver gravado antes, para não apagar por cima do
+  // resumo bom de uma sessão que já encerrou direito.
+  if (!s) {
+    if (!diagnostico.resumoExiste()) {
+      diagnostico.gravarResumo({
+        encerradoEm: new Date().toISOString(),
+        semSessao: true,
+        notas: diagnostico.notas(),
+      });
+      console.warn('[WhatsApp] Encerrando sem sessão viva: nada foi enviado nesta execução.');
+      diagnostico.encerrar();
+    }
+    return;
+  }
+
   sessao = null;
 
   cortado = false;
