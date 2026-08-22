@@ -254,20 +254,27 @@ para o bot durante a janela inteira. Nas vezes anteriores em que isso apareceu, 
 esticar o filtro (4h → 6h → 7h), o que só troca de erro: esticar o bastante para pegar a
 estreia publicada de manhã é esticar o bastante para mandar o culto **da manhã** à noite.
 
-Hoje a referência é o **horário marcado da transmissão** (`scheduledStartTime`, ou
-`actualStartTime` quando já começou), lido de `liveStreamingDetails` na mesma chamada ao
-`videos.list` que já era feita para separar live de estreia — ou seja, sem custo novo de quota.
-Com isso:
+Hoje a referência é o **horário da transmissão**, lido de `liveStreamingDetails` na mesma
+chamada ao `videos.list` que já era feita para separar live de estreia. Desde 22/08, com o fim
+do filtro de título, essa régua (`escolherPorHorario`) vale para **tudo** — inclusive os
+resultados dos search por `live` e `upcoming`, que antes eram aceitos crus (o índice do search
+é cacheado e sabe devolver transmissão recém-encerrada). As regras:
 
-- `filtroHoras` passa a significar **"há quanto tempo, no máximo, o culto pode ter começado"**,
-  e não mais a idade do arquivo;
-- existe um teto para o futuro (`ESTREIA_FUTURO_MIN`, 90 min), que corrige um erro silencioso
-  do outro lado: a estreia da noite costuma já estar agendada de manhã, e a regra antiga podia
-  mandar o link da noite na janela da manhã;
-- havendo mais de um culto na playlist, ganha o **mais próximo de agora**, que é o que separa o
-  da manhã do da noite sem nenhum ajuste manual de horas;
-- se o `videos.list` falhar, tudo **degrada para a regra antiga** (hora do upload), em vez de
-  deixar a janela sem link.
+- transmissão **já encerrada** (`actualEndTime`) é rejeitada sempre — gravação é papel do
+  fallback, e sem isso um evento da tarde caberia no piso de horas da janela da noite;
+- transmissão **no ar** (`actualStartTime`): vale `filtroHoras` — "há quanto tempo, no máximo,
+  o culto pode ter começado". Também barra encoder esquecido ligado por dias;
+- transmissão **só agendada** (`scheduledStartTime`): futuro até `ESTREIA_FUTURO_MIN` (90 min,
+  para a manhã não mandar o link da noite) e atraso até `ESTREIA_ATRASO_MIN` (60 min, cobre
+  culto atrasado sem engolir o broadcast agendado de tarde e abandonado, que fica "upcoming"
+  para sempre na API);
+- vídeo **sem horário de transmissão** é rejeitado: upload comum (clipe, aviso) ou rascunho
+  de sala de espera sem data (o caso de 22/08);
+- havendo mais de um candidato na janela, ganha o **mais próximo de agora**, que é o que separa
+  o da manhã do da noite sem nenhum ajuste manual de horas;
+- se o `videos.list` falhar, a tentativa é **descartada** — sem os detalhes não há como validar
+  horário, e a degradação antiga para a hora do upload só era segura quando o filtro de título
+  existia. A tentativa seguinte, um minuto depois, refaz as chamadas.
 
 ### Nota sobre YouTube API Quota
 
@@ -276,14 +283,18 @@ O bot usa a **YouTube Data API v3** com limite de **10.000 unidades/dia**:
 - `playlistItems.list` (buscar em upload playlist) = **1 unidade** por chamada
 - `videos.list` (validar tipo de vídeo) = **1 unidade** por chamada
 
-**Consumo máximo em um domingo:** 36 tentativas (manhã) × 201 unidades + 31 tentativas (noite) × 201 unidades ≈ **13.500 unidades** (excede quota).
+Desde 22/08 as buscas caras (os dois `search.list`) rodam só **a cada 3 tentativas**
+(tentativas 1, 4, 7...); a playlist + `videos.list` (2-3 unidades) rodam em todas. Antes da
+cadência, o pior domingo — nenhuma transmissão encontrada em nenhuma janela — custava
+67 tentativas × ~203 ≈ **13,7 mil unidades**, acima do teto, com a quota morrendo no meio da
+janela da noite e levando junto o fallback de gravação. Com a cadência, o mesmo pior caso fica
+em **~5 mil unidades**, e o sábado vazio (resultado esperado do culto em teste) em ~3 mil. O
+preço é um atraso de até 2 min para uma live que só o search enxerga — e a experiência aqui
+registrada é a oposta: o search é que atrasa, a playlist vê primeiro.
 
-Porém, **funciona** porque:
-1. As buscas por `eventType` têm lag de indexação, então frequentemente retornam nada nas primeiras tentativas
-2. O **Método 3** (playlist de uploads com custo de 1 unidade) pega premieres que as buscas caras perdem
-3. Na prática, o consumo real fica ~60-70% do pior caso
-
-**Se a quota esgotar:** o bot vai logar `Request failed with status code 403: quotaExceeded` e parar de enviar links naquela janela. Repete na próxima janela (segunda-feira manhã). Para evitar: monitore os logs no Fly.io durante os cultos.
+**Se a quota esgotar:** o bot vai logar `Request failed with status code 403: quotaExceeded`;
+o caminho da playlist (barato) continua tentando. Para conferir depois: `journalctl -u
+culto-bot` na VM.
 
 ---
 
@@ -462,22 +473,35 @@ Agradecemos a compreensão de todos! 🙏
 npm test
 ```
 
-São quatro suítes, todas rodando o código real com as dependências externas trocadas por
+São cinco suítes, todas rodando o código real com as dependências externas trocadas por
 dublês. Nenhuma delas toca no YouTube ou no WhatsApp de verdade.
 
 **`testes/simular-aviso.js`** exercita `monitorarAoVivo` com relógio simulado (sem esperar 36
-minutos). Cobre: aviso no minuto certo nas três janelas, aviso suprimido quando o link chega
-antes do prazo, aviso seguido do link quando ele chega depois, e reenvio sem duplicação quando
-o primeiro envio falha.
+minutos). Cobre: aviso no minuto certo nas janelas que o têm, aviso suprimido quando o link
+chega antes do prazo, aviso seguido do link quando ele chega depois, reenvio sem duplicação
+quando o primeiro envio falha, e a janela **sem** aviso (sábado, `avisoAposMin: null`)
+segurando a mensagem pelas 41 tentativas completas.
 
 **`testes/simular-youtube.js`** roda a regra real de escolha do vídeo, sem rede, com os **dois
 cultos do mesmo domingo** na playlist — o caso que qualquer ajuste de horas erra. Cobre: a
 estreia das 19h publicada de manhã sendo achada à noite (o bug de 16/08), a mesma playlist
 escolhendo o culto da manhã na janela da manhã, o culto da manhã **não** sendo reenviado à
-noite, live de verdade continuando a ser classificada como live pela duração `P0D`, e a queda
-para a regra antiga quando o `videos.list` falha. Cobre também a recuperação de janela
-perdida: máquina subindo atrasada é recuperada, e subindo no horário normal (ou dentro do
-próprio minuto do gatilho) **não** é, para não rodar a janela duas vezes.
+noite, live de verdade continuando a ser classificada como live pela duração `P0D`, a
+tentativa sendo **descartada** quando o `videos.list` falha (a degradação antiga para hora de
+upload saiu junto com o filtro de título), o rascunho de transmissão sem data rejeitado (o
+caso de 22/08), o upload comum rejeitado, o título fora do padrão antigo aceito, a
+transmissão **encerrada** rejeitada, o agendamento **abandonado** da tarde rejeitado e o
+culto **atrasado** (até 60 min) aceito. Cobre também a configuração da janela de sábado e a
+recuperação de janela perdida: máquina subindo atrasada é recuperada (inclusive no sábado), e
+subindo no horário normal (ou dentro do próprio minuto do gatilho) **não** é, para não rodar
+a janela duas vezes.
+
+**`testes/simular-busca.js`** exercita a fiação completa de `buscarTransmissaoAoVivo` e
+`buscarUltimaGravacao` com o axios trocado por dublê: o Método 1 validando o resultado do
+search no `videos.list` em vez de aceitá-lo cru, a live recém-encerrada devolvida pelo índice
+defasado do search sendo barrada, o caso 22/08 de ponta a ponta, o Método 2 aceitando estreia
+agendada próxima, a cadência das buscas caras (tentativa 2 sem nenhum `search.list`, tentativa
+4 com), e o fallback de gravação rejeitando teste de som pelo piso de duração.
 
 **`testes/simular-reenvio.js`** exercita o ciclo de vida da conexão em `whatsapp.js` com um
 socket falso, e roda duas vezes, com `FORCAR_SESSOES` desligado e ligado. Cobre: histórico
