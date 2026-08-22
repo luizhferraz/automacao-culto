@@ -14,60 +14,71 @@ const http = axios.create({ timeout: Number(process.env.YOUTUBE_TIMEOUT_MS || 15
 // bot da manhã não mandar o link do culto da noite, que costuma já estar agendado no canal.
 const TOLERANCIA_FUTURO_MIN = Number(process.env.ESTREIA_FUTURO_MIN || 90);
 
-// Normaliza string: minúsculas + remove acentos
-function normalizar(str) {
-  return str
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-// Palavras-chave normalizadas para identificar os cultos
-const PALAVRAS_CULTO = [
-  'culto da familia',
-  'culto de fe',
-  'culto familia',  // variação sem "da"
-  'culto fe',       // variação sem "de"
-  'especial de',    // cultos especiais: "Especial de Páscoa", "Especial de Natal", etc.
-];
-
-function ehCulto(titulo) {
-  const norm = normalizar(titulo);
-  return PALAVRAS_CULTO.some(p => norm.includes(p));
-}
+// ── Sem filtro de título ─────────────────────────────────────────────────────
+// Até 22/08 só contavam títulos com palavras-chave ("Culto da Família", "Culto de Fé",
+// "Especial de..."). A lista quebrava a cada variação nova de título e foi aposentada junto
+// com a entrada da janela de sábado: DENTRO de uma janela de culto, qualquer transmissão do
+// canal é o culto. Quem impede o vídeo errado de sair deixou de ser o título e passou a ser
+// o horário: só é aceito o que está NO AR agora (Método 1) ou cuja transmissão tem horário
+// marcado dentro da janela (Métodos 2 e 3, via escolherPorHorario). Foi exatamente isso que
+// segurou o caso de 22/08: um rascunho de transmissão sem data, criado de manhã no canal,
+// passaria por qualquer filtro de recência de upload, mas não tem horário marcado.
 
 async function buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras = 8) {
-  // Método 1: live streams ativos
-  // Método 2: transmissões agendadas (upcoming)
-  for (const eventType of ['live', 'upcoming']) {
-    try {
-      const { data } = await http.get(`${BASE_URL}/search`, {
-        params: {
-          part: 'snippet',
-          channelId,
-          type: 'video',
-          eventType,
-          maxResults: 10,
-          key: apiKey,
-        },
-      });
+  // Método 1: live streams ativos. eventType=live só devolve o que está DE FATO transmitindo
+  // agora, então é o único método que dispensa validação de horário.
+  try {
+    const { data } = await http.get(`${BASE_URL}/search`, {
+      params: {
+        part: 'snippet',
+        channelId,
+        type: 'video',
+        eventType: 'live',
+        maxResults: 10,
+        key: apiKey,
+      },
+    });
 
-      const video = data.items?.find(item => ehCulto(item.snippet.title));
-
-      if (video) {
-        console.log(`[YouTube] Encontrado como '${eventType}': ${video.snippet.title}`);
-        return {
-          id: video.id.videoId,
-          titulo: video.snippet.title,
-          url: `https://www.youtube.com/watch?v=${video.id.videoId}`,
-          fonte: 'live',
-        };
-      }
-    } catch (err) {
-      console.error(`[YouTube] Erro ao buscar ${eventType}:`, err.message);
+    const video = data.items?.[0];
+    if (video?.id?.videoId) {
+      console.log(`[YouTube] Encontrado como 'live': ${video.snippet.title}`);
+      return {
+        id: video.id.videoId,
+        titulo: video.snippet.title,
+        url: `https://www.youtube.com/watch?v=${video.id.videoId}`,
+        fonte: 'live',
+      };
     }
+  } catch (err) {
+    console.error('[YouTube] Erro ao buscar live:', err.message);
+  }
+
+  // Método 2: transmissões agendadas (upcoming). Sem o filtro de título este método não pode
+  // mais ser aceito cru: "upcoming" devolve tanto o culto que começa em dez minutos quanto o
+  // da noite agendado com antecedência — e a régua que separa um do outro é a mesma da
+  // playlist, o horário marcado. Por isso os resultados passam pelo escolherPorHorario.
+  try {
+    const { data } = await http.get(`${BASE_URL}/search`, {
+      params: {
+        part: 'snippet',
+        channelId,
+        type: 'video',
+        eventType: 'upcoming',
+        maxResults: 10,
+        key: apiKey,
+      },
+    });
+
+    const candidatos = (data.items || [])
+      .filter(i => i.id?.videoId)
+      .map(i => ({ id: i.id.videoId, titulo: i.snippet?.title }));
+
+    if (candidatos.length > 0) {
+      const escolha = escolherPorHorario(candidatos, await detalharVideos(candidatos, apiKey), filtroHoras, 'upcoming');
+      if (escolha) return escolha;
+    }
+  } catch (err) {
+    console.error('[YouTube] Erro ao buscar upcoming:', err.message);
   }
 
   // Método 3: playlist de uploads do canal
@@ -84,16 +95,15 @@ async function buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras = 8) {
     });
 
     const candidatos = (data.items || [])
-      .filter(i => ehCulto(i.snippet?.title) && i.snippet?.resourceId?.videoId)
+      .filter(i => i.snippet?.resourceId?.videoId)
       .map(i => ({
         id: i.snippet.resourceId.videoId,
         titulo: i.snippet.title,
-        publicadoEm: i.snippet.publishedAt,
       }));
 
     if (candidatos.length === 0) return null;
 
-    return escolherDaPlaylist(candidatos, await detalharVideos(candidatos, apiKey), filtroHoras);
+    return escolherPorHorario(candidatos, await detalharVideos(candidatos, apiKey), filtroHoras, 'playlist');
   } catch (err) {
     console.error('[YouTube] Erro ao buscar playlist de uploads:', err.message);
   }
@@ -102,12 +112,12 @@ async function buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras = 8) {
 }
 
 /**
- * Uma única chamada a videos.list para todos os candidatos da playlist (custa 1 unidade,
- * independente de quantos ids vão junto). Devolve um mapa id → detalhes, ou null se a
- * chamada falhar, que é o sinal para o chamador cair na regra antiga.
+ * Uma única chamada a videos.list para todos os candidatos (custa 1 unidade, independente de
+ * quantos ids vão junto). Devolve um mapa id → detalhes, ou null se a chamada falhar — e sem
+ * detalhes a tentativa é descartada (ver escolherPorHorario).
  *
- * `liveStreamingDetails` é a parte que faltava. Ela traz o horário MARCADO da estreia, que é
- * a única coisa que diz a que culto o vídeo pertence. Ver escolherDaPlaylist.
+ * `liveStreamingDetails` é a parte que decide tudo. Ela traz o horário MARCADO da
+ * transmissão, que é a única coisa que diz a que culto o vídeo pertence.
  */
 async function detalharVideos(candidatos, apiKey) {
   try {
@@ -126,7 +136,7 @@ async function detalharVideos(candidatos, apiKey) {
 }
 
 /**
- * Escolhe, entre os cultos da playlist, o que pertence a ESTA janela.
+ * Escolhe, entre os candidatos de um método, o vídeo que pertence a ESTA janela.
  *
  * A regra antiga era `publishedAt` nas últimas `filtroHoras`, ou seja, a hora do UPLOAD. Isso
  * confundia duas coisas diferentes: quando o arquivo subiu e quando o culto acontece. Numa
@@ -138,23 +148,30 @@ async function detalharVideos(candidatos, apiKey) {
  * (4h → 6h → 7h), o que só empurra o problema: esticar o bastante para pegar a estreia
  * publicada de manhã é esticar o bastante para pegar o culto DA MANHÃ à noite.
  *
- * Agora a referência é o horário marcado da transmissão (`scheduledStartTime`, ou
- * `actualStartTime` quando já começou), e `filtroHoras` passa a significar "há quanto tempo,
- * no máximo, o culto pode ter começado". A hora do upload só é usada quando o vídeo não tem
- * `liveStreamingDetails` — um upload comum, sem estreia agendada.
+ * A referência é o horário marcado da transmissão (`scheduledStartTime`, ou
+ * `actualStartTime` quando já começou), e `filtroHoras` significa "há quanto tempo, no
+ * máximo, o culto pode ter começado". O teto para o futuro (TOLERANCIA_FUTURO_MIN) fecha o
+ * outro lado: a estreia da noite costuma já estar agendada no canal de manhã, e sem o teto a
+ * janela da manhã mandaria o link do culto da noite.
  *
- * O teto para o futuro (TOLERANCIA_FUTURO_MIN) corrige de quebra um erro silencioso do outro
- * lado: a estreia da noite costuma já estar agendada no canal de manhã, e a regra antiga
- * aceitava o upload recente sem olhar o horário. A janela da manhã podia mandar o link do
- * culto da noite.
+ * Vídeo sem horário marcado é REJEITADO, e sem os detalhes (videos.list falhou) a tentativa
+ * inteira é descartada. Já foi diferente: a regra degradava para a hora do upload. Ela era
+ * protegida pelo filtro de título, que não existe mais — sem ele, "qualquer vídeo recente"
+ * inclui clipe, aviso e o rascunho de transmissão sem data que apareceu no canal em 22/08.
+ * Descartar custa pouco: a tentativa seguinte, um minuto depois, refaz as chamadas.
  */
-function escolherDaPlaylist(candidatos, detalhes, filtroHoras) {
+function escolherPorHorario(candidatos, detalhes, filtroHoras, origem = 'playlist') {
+  if (!detalhes) {
+    console.warn(`[YouTube] ${origem}: videos.list falhou, sem como validar horário; tentativa descartada.`);
+    return null;
+  }
+
   const agora = Date.now();
   const pisoMs = agora - filtroHoras * 60 * 60 * 1000;
   const tetoMs = agora + TOLERANCIA_FUTURO_MIN * 60 * 1000;
 
   const avaliados = candidatos.map(c => {
-    const detalhe = detalhes?.get(c.id);
+    const detalhe = detalhes.get(c.id);
 
     // Live real vs estreia: uma transmissão ao vivo em andamento tem
     // contentDetails.duration = 'P0D' (duração indefinida). Uma estreia tem a duração real do
@@ -165,13 +182,9 @@ function escolherDaPlaylist(candidatos, detalhes, filtroHoras) {
 
     const marcado = detalhe?.liveStreamingDetails?.actualStartTime
       || detalhe?.liveStreamingDetails?.scheduledStartTime;
+    const referencia = marcado ? new Date(marcado).getTime() : NaN;
 
-    // Sem detalhes (a chamada falhou) ou sem horário marcado (upload comum, sem estreia),
-    // vale a regra antiga: a hora do upload. Assim uma falha do videos.list degrada para o
-    // comportamento anterior em vez de deixar a janela sem link.
-    const referencia = new Date(marcado || c.publicadoEm).getTime();
-
-    return { ...c, fonte, referencia, porHorarioMarcado: !!marcado, distancia: Math.abs(referencia - agora) };
+    return { ...c, fonte, referencia, distancia: Math.abs(referencia - agora) };
   });
 
   const dentroDaJanela = avaliados.filter(v =>
@@ -179,13 +192,16 @@ function escolherDaPlaylist(candidatos, detalhes, filtroHoras) {
   );
 
   for (const v of avaliados) {
-    const base = v.porHorarioMarcado ? 'horário marcado' : 'upload';
-    const situacao = dentroDaJanela.includes(v) ? 'na janela' : 'fora da janela';
-    console.log(`[YouTube] Playlist: "${v.titulo}" | ${base} ${new Date(v.referencia).toISOString()} | ${v.fonte} | ${situacao}`);
+    const quando = Number.isFinite(v.referencia)
+      ? `transmissão ${new Date(v.referencia).toISOString()}`
+      : 'sem horário de transmissão';
+    const situacao = !Number.isFinite(v.referencia) ? 'rejeitado'
+      : dentroDaJanela.includes(v) ? 'na janela' : 'fora da janela';
+    console.log(`[YouTube] ${origem}: "${v.titulo}" | ${quando} | ${v.fonte} | ${situacao}`);
   }
 
   if (dentroDaJanela.length === 0) {
-    console.log(`[YouTube] Nenhum culto na janela (começou há até ${filtroHoras}h ou começa em até ${TOLERANCIA_FUTURO_MIN} min).`);
+    console.log(`[YouTube] ${origem}: nenhum culto na janela (começou há até ${filtroHoras}h ou começa em até ${TOLERANCIA_FUTURO_MIN} min).`);
     return null;
   }
 
@@ -217,10 +233,11 @@ async function buscarUltimaGravacao(apiKey, channelId) {
     });
 
     // Só considera vídeos publicados nas últimas 6 horas
-    // (evita enviar o culto da manhã como fallback do culto da noite)
+    // (evita enviar o culto da manhã como fallback do culto da noite).
+    // eventType=completed garante que foi uma transmissão, então o filtro de título saiu
+    // daqui junto com os demais: qualquer transmissão encerrada recente serve de fallback.
     const seisHorasAtras = new Date(Date.now() - 6 * 60 * 60 * 1000);
     const video = data.items?.find(item =>
-      ehCulto(item.snippet.title) &&
       new Date(item.snippet.publishedAt) > seisHorasAtras
     );
 
@@ -239,6 +256,6 @@ async function buscarUltimaGravacao(apiKey, channelId) {
   }
 }
 
-// escolherDaPlaylist é exportada para os testes automatizados rodarem a regra real de escolha
+// escolherPorHorario é exportada para os testes automatizados rodarem a regra real de escolha
 // (ver testes/simular-youtube.js), sem depender da rede.
-module.exports = { buscarTransmissaoAoVivo, buscarUltimaGravacao, escolherDaPlaylist };
+module.exports = { buscarTransmissaoAoVivo, buscarUltimaGravacao, escolherPorHorario };

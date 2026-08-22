@@ -33,6 +33,14 @@ const JANELAS = [
     chave: 'quarta-noite', rotulo: 'Quarta 19h54', diaSemana: 3, hora: 19, minuto: 54,
     maxTentativas: 36, filtroHoras: 7, avisoAposMin: 9, fallbackGravacao: false,
   },
+  {
+    // Culto das 19h ainda em fase de teste na igreja, por isso avisoAposMin: null — sábado
+    // sem transmissão é resultado esperado, não incidente para anunciar no grupo. A janela
+    // abre mais cedo que as outras (11 min antes do culto, contra 6) porque o horário de
+    // sábado ainda oscila; 41 tentativas fecham a janela às 19h30, como nas demais.
+    chave: 'sabado-noite', rotulo: 'Sábado 18h49', diaSemana: 6, hora: 18, minuto: 49,
+    maxTentativas: 41, filtroHoras: 7, avisoAposMin: null, fallbackGravacao: false,
+  },
 ];
 
 const inicioEmMinutos = (j) => j.hora * 60 + j.minuto;
@@ -106,7 +114,7 @@ function monitorarAoVivo({ chave, maxTentativas, nomeGrupo, apiKey, channelId, f
   }
   tentativasAtivas[chave] = 0;
   console.log(`\n[Scheduler] ▶ Iniciando monitoramento: ${chave} (máx ${maxTentativas} tentativas)`);
-  diagnostico.anotar(`janela ${chave}: início, até ${maxTentativas} tentativas, filtro ${filtroHoras}h, aviso após ${avisoAposMin} min`);
+  diagnostico.anotar(`janela ${chave}: início, até ${maxTentativas} tentativas, filtro ${filtroHoras}h, aviso ${avisoAposMin === null ? 'desligado' : `após ${avisoAposMin} min`}`);
 
   const inicio = Date.now();
   const prazoJanelaMs = (maxTentativas + FOLGA_JANELA_MIN) * INTERVALO_MIN * 60 * 1000;
@@ -290,9 +298,10 @@ function iniciarAgendamentos(config) {
   for (const j of JANELAS) {
     const fim = inicioEmMinutos(j) + j.maxTentativas;
     const hhmm = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}h${String(min % 60).padStart(2, '0')}`;
-    console.log(`   • ${j.rotulo} → verifica a cada ${INTERVALO_MIN} min até ${hhmm(fim)} (aviso de atraso após ${j.avisoAposMin} min)`);
+    const aviso = j.avisoAposMin === null ? 'sem aviso de atraso' : `aviso de atraso após ${j.avisoAposMin} min`;
+    console.log(`   • ${j.rotulo} → verifica a cada ${INTERVALO_MIN} min até ${hhmm(fim)} (${aviso})`);
   }
-  console.log('   Títulos aceitos: "Culto da Família", "Culto de Fé", "Especial de..." (e variações)');
+  console.log('   Qualquer transmissão ao vivo ou estreia do canal conta como culto (sem filtro de título).');
 
   const perdida = janelaPerdida();
   if (perdida) {

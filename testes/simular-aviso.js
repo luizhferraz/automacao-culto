@@ -176,6 +176,21 @@ async function main() {
     console.log('');
   }
 
+  // Cenário 5: janela com aviso desligado (sábado, culto em teste) → nunca avisa
+  {
+    console.log('▶ sabado-noite: transmissão nunca aparece e avisoAposMin é null (culto em teste)');
+    // O culto de sábado ainda é experimento da igreja: janela vazia é resultado esperado,
+    // não incidente. avisoAposMin: null precisa segurar o aviso a janela INTEIRA — o teste
+    // roda as 41 tentativas para provar que nenhum minuto dispara a mensagem.
+    const janela = { maxTentativas: 41, filtroHoras: 7, avisoAposMin: null };
+    const r = await cenario('sem-aviso', janela, 'sabado-sem-aviso', () => null);
+
+    checar('nenhum aviso enviado na janela inteira', r.avisos.length === 0, `(enviados: ${r.avisos.length})`);
+    checar('nenhum link enviado', r.links.length === 0);
+    checar('função retornou false', r.enviouLink === false);
+    console.log('');
+  }
+
   console.log('═══════════════════════════════════');
   if (falhas === 0) {
     console.log('✅ Todos os cenários passaram.\n');

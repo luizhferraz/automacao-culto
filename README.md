@@ -6,12 +6,14 @@ Envia automaticamente os links das transmissões ao vivo (e estreias) para um ca
 
 ## Como funciona
 
-O bot monitora o canal do YouTube a cada **1 minuto** a partir do horário configurado. Assim que encontra uma transmissão ao vivo ou estreia agendada com título reconhecido, envia o link para o grupo e para de monitorar.
+O bot monitora o canal do YouTube a cada **1 minuto** a partir do horário configurado. Assim que encontra uma transmissão ao vivo ou estreia do canal, envia o link para o grupo e para de monitorar.
 
-**Títulos reconhecidos:**
-- `Culto da Família` (e variações)
-- `Culto de Fé` (e variações)
-- `Especial de ...` (ex: Especial de Páscoa, Especial de Natal)
+**Sem filtro de título** (desde 22/08): dentro de uma janela de culto, **qualquer** transmissão
+do canal é o culto — a lista de palavras-chave ("Culto da Família", "Culto de Fé",
+"Especial de...") quebrava a cada variação nova de nome e foi aposentada. Quem impede o vídeo
+errado de sair passou a ser o **horário**: só é aceito o que está de fato no ar agora, ou cuja
+transmissão tem horário marcado dentro da janela. Upload comum (clipe, aviso) e rascunho de
+transmissão sem data não passam — nenhum dos dois tem horário de transmissão.
 
 **Horários monitorados:**
 
@@ -20,11 +22,14 @@ O bot monitora o canal do YouTube a cada **1 minuto** a partir do horário confi
 | Domingo manhã | 9h54 | 10h00 | até 10h30 | 10h03 | Envia link ao vivo |
 | Domingo noite | 18h59 | 19h00 | até 19h30 | 19h03 | Envia link ao vivo; se não encontrar, envia a gravação mais recente (últimas 6h) |
 | Quarta-feira | 19h54 | 20h00 | até 20h30 | 20h03 | Envia link ao vivo |
+| Sábado | 18h49 | 19h00 | até 19h30 | — | Envia link ao vivo. Culto em teste na igreja: **sem** aviso de atraso |
 
 **Aviso de atraso:** se o link ainda não foi encontrado 3 minutos após o horário do culto, o bot
 envia uma mensagem ao grupo avisando que a transmissão atrasou. É enviado no máximo uma vez por
 janela e não interrompe a busca: se o link aparecer depois, ele é enviado normalmente em seguida.
 Se o primeiro envio do aviso falhar, o bot tenta de novo na tentativa seguinte, sem duplicar.
+A janela de sábado não tem aviso (`avisoAposMin: null`): enquanto o culto de sábado for
+experimento, sábado sem transmissão é resultado esperado, não incidente para anunciar no grupo.
 
 **Ciclo automático (Fly.io + cron externo):**
 1. A máquina é ligada 5 min antes de cada janela
