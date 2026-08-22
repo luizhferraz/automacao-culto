@@ -33,6 +33,14 @@ const JANELAS = [
     chave: 'quarta-noite', rotulo: 'Quarta 19h54', diaSemana: 3, hora: 19, minuto: 54,
     maxTentativas: 36, filtroHoras: 7, avisoAposMin: 9, fallbackGravacao: false,
   },
+  {
+    // Culto das 19h ainda em fase de teste na igreja, por isso avisoAposMin: null — sábado
+    // sem transmissão é resultado esperado, não incidente para anunciar no grupo. A janela
+    // abre 11 min antes do culto (as demais abrem de 1 a 6 min antes) porque o horário de
+    // sábado ainda oscila; 41 tentativas fecham a janela às 19h30, como nas demais.
+    chave: 'sabado-noite', rotulo: 'Sábado 18h49', diaSemana: 6, hora: 18, minuto: 49,
+    maxTentativas: 41, filtroHoras: 7, avisoAposMin: null, fallbackGravacao: false,
+  },
 ];
 
 const inicioEmMinutos = (j) => j.hora * 60 + j.minuto;
@@ -74,8 +82,8 @@ function mensagemGravacao(titulo, url) {
 
 // Enviada ao grupo quando o link ainda não saiu alguns minutos após o início do culto.
 // Decisão consciente do Luiz: o texto atribui o atraso à internet, mesmo que o bot só
-// saiba que a busca voltou vazia (a live pode ter atrasado, o título pode estar fora
-// das palavras-chave, ou a quota da API pode ter esgotado). Na prática da igreja o
+// saiba que a busca voltou vazia (a live pode ter atrasado, a transmissão pode não ter
+// sido criada no canal, ou a quota da API pode ter esgotado). Na prática da igreja o
 // motivo costuma ser a conexão, e a redação foi mantida como ele escreveu.
 function mensagemAtraso() {
   return (
@@ -106,7 +114,7 @@ function monitorarAoVivo({ chave, maxTentativas, nomeGrupo, apiKey, channelId, f
   }
   tentativasAtivas[chave] = 0;
   console.log(`\n[Scheduler] ▶ Iniciando monitoramento: ${chave} (máx ${maxTentativas} tentativas)`);
-  diagnostico.anotar(`janela ${chave}: início, até ${maxTentativas} tentativas, filtro ${filtroHoras}h, aviso após ${avisoAposMin} min`);
+  diagnostico.anotar(`janela ${chave}: início, até ${maxTentativas} tentativas, filtro ${filtroHoras}h, aviso ${avisoAposMin === null ? 'desligado' : `após ${avisoAposMin} min`}`);
 
   const inicio = Date.now();
   const prazoJanelaMs = (maxTentativas + FOLGA_JANELA_MIN) * INTERVALO_MIN * 60 * 1000;
@@ -122,7 +130,9 @@ function monitorarAoVivo({ chave, maxTentativas, nomeGrupo, apiKey, channelId, f
       } else {
         console.log(`[Scheduler] Tentativa ${n}/${maxTentativas}, buscando ao vivo...`);
         try {
-          const video = await buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras);
+          // O número da tentativa vai junto: as buscas caras do YouTube (search) só rodam a
+          // cada CADENCIA_BUSCAS_CARAS tentativas, para o pior domingo caber na quota diária.
+          const video = await buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras, n);
           if (video) {
             await enviarMensagem(nomeGrupo, mensagemParaVideo(video));
             console.log(`[Scheduler] ✅ Link enviado (${video.fonte}): ${video.url}`);
@@ -290,9 +300,10 @@ function iniciarAgendamentos(config) {
   for (const j of JANELAS) {
     const fim = inicioEmMinutos(j) + j.maxTentativas;
     const hhmm = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}h${String(min % 60).padStart(2, '0')}`;
-    console.log(`   • ${j.rotulo} → verifica a cada ${INTERVALO_MIN} min até ${hhmm(fim)} (aviso de atraso após ${j.avisoAposMin} min)`);
+    const aviso = j.avisoAposMin === null ? 'sem aviso de atraso' : `aviso de atraso após ${j.avisoAposMin} min`;
+    console.log(`   • ${j.rotulo} → verifica a cada ${INTERVALO_MIN} min até ${hhmm(fim)} (${aviso})`);
   }
-  console.log('   Títulos aceitos: "Culto da Família", "Culto de Fé", "Especial de..." (e variações)');
+  console.log('   Qualquer transmissão ao vivo ou estreia do canal conta como culto (sem filtro de título).');
 
   const perdida = janelaPerdida();
   if (perdida) {

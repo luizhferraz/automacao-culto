@@ -14,7 +14,7 @@
  * Uso: node testes/simular-youtube.js
  */
 
-const { escolherDaPlaylist } = require('../youtube');
+const { escolherPorHorario } = require('../youtube');
 const { JANELAS, janelaPerdida } = require('../scheduler');
 
 let falhas = 0;
@@ -48,7 +48,7 @@ function escolherEm(instanteISO, chaveDaJanela, entrada = candidatos, detalhes =
   const real = Date.now;
   Date.now = () => new Date(instanteISO).getTime();
   try {
-    return escolherDaPlaylist(entrada, detalhes, janelaPor(chaveDaJanela).filtroHoras);
+    return escolherPorHorario(entrada, detalhes, janelaPor(chaveDaJanela).filtroHoras);
   } finally {
     Date.now = real;
   }
@@ -103,19 +103,18 @@ function main() {
     console.log('');
   }
 
-  // 5: sem detalhes (videos.list falhou), vale a regra antiga do upload
+  // 5: sem detalhes (videos.list falhou), a tentativa é descartada
   {
-    console.log('▶ videos.list indisponível: degrada para a regra antiga (hora do upload)');
+    console.log('▶ videos.list indisponível: tentativa descartada (sem degradar para a hora do upload)');
+    // A degradação antiga era protegida pelo filtro de título, que não existe mais: sem os
+    // detalhes não há como distinguir o culto de um clipe recém-postado. Melhor perder um
+    // minuto (a próxima tentativa refaz a chamada) do que mandar o vídeo errado ao grupo.
+    // O publicadoEm recente é deliberado: a regra velha o aceitaria, então reintroduzir a
+    // degradação para hora de upload faz este cenário quebrar.
     const publicadoAgora = [{ id: 'x', titulo: 'Culto de Fé', publicadoEm: '2026-08-16T21:40:00.000Z' }];
     const r = escolherEm('2026-08-16T21:59:00.000Z', 'domingo-noite', publicadoAgora, null);
 
-    checar('achou pelo upload recente', r?.id === 'x', `→ ${r?.id}`);
-    checar('e assumiu estreia', r?.fonte === 'estreia', `→ ${r?.fonte}`);
-
-    // E o upload velho continua sendo recusado, como antes.
-    const publicadoOntem = [{ id: 'y', titulo: 'Culto de Fé', publicadoEm: '2026-08-15T21:40:00.000Z' }];
-    const antigo = escolherEm('2026-08-16T21:59:00.000Z', 'domingo-noite', publicadoOntem, null);
-    checar('upload de ontem continua fora', antigo === null, `→ ${antigo?.id || 'nenhum'}`);
+    checar('não enviou nada', r === null, `→ ${r?.id || 'nenhum'}`);
     console.log('');
   }
 
@@ -134,9 +133,134 @@ function main() {
     console.log('');
   }
 
+  // 7: rascunho de transmissão sem data (o caso real de sábado 22/08)
+  {
+    console.log('▶ rascunho de transmissão sem data no canal: rejeitado mesmo recém-criado');
+    // Visto no canal em 22/08: a equipe criou a "sala de espera" de uma transmissão sem
+    // agendar horário. O vídeo tem P0D (parece live) e publishedAt recente, mas
+    // liveStreamingDetails vem sem horário nenhum. Sem filtro de título, a ausência de
+    // horário marcado é a única coisa que o segura. O publicadoEm recente (dentro do piso de
+    // upload da regra velha) é deliberado: se alguém reintroduzir a degradação para hora de
+    // upload, este cenário quebra.
+    const rascunho = [{ id: 'r', titulo: 'Culto de Fé| 19/08 | 20h', publicadoEm: '2026-08-22T21:30:00.000Z' }];
+    const detalhes = new Map([['r', {
+      id: 'r',
+      contentDetails: { duration: 'P0D' },
+      liveStreamingDetails: {}, // só activeLiveChatId na vida real; nenhum horário
+    }]]);
+    const r = escolherEm('2026-08-22T22:00:00.000Z', 'sabado-noite', rascunho, detalhes);
+
+    checar('não enviou nada', r === null, `→ ${r?.id || 'nenhum'}`);
+    console.log('');
+  }
+
+  // 8: upload comum recente (clipe, aviso) não é transmissão
+  {
+    console.log('▶ upload comum publicado no meio da janela: rejeitado');
+    // Sem o filtro de título, um clipe postado às 18h30 de sábado estaria "recente" para
+    // qualquer regra de upload. Ele não tem liveStreamingDetails, e é isso que o barra.
+    const clipe = [{ id: 'c', titulo: 'Melhores momentos da semana', publicadoEm: '2026-08-22T21:30:00.000Z' }];
+    const detalhes = new Map([['c', {
+      id: 'c',
+      contentDetails: { duration: 'PT2M30S' },
+      // upload comum: sem liveStreamingDetails
+    }]]);
+    const r = escolherEm('2026-08-22T22:00:00.000Z', 'sabado-noite', clipe, detalhes);
+
+    checar('não enviou nada', r === null, `→ ${r?.id || 'nenhum'}`);
+    console.log('');
+  }
+
+  // 9: sem filtro de título, um culto com nome fora do padrão é aceito
+  {
+    console.log('▶ live com título fora do padrão antigo: aceita pelo horário');
+    const titulo = [{ id: 't', titulo: 'Noite de Adoração e Louvor', publicadoEm: '2026-08-22T20:00:00.000Z' }];
+    const detalhes = new Map([['t', {
+      id: 't',
+      contentDetails: { duration: 'P0D' },
+      liveStreamingDetails: { scheduledStartTime: '2026-08-22T22:00:00.000Z', actualStartTime: '2026-08-22T22:01:00.000Z' },
+    }]]);
+    const r = escolherEm('2026-08-22T22:05:00.000Z', 'sabado-noite', titulo, detalhes);
+
+    checar('achou o vídeo', r?.id === 't', `→ ${r?.id || 'nenhum'}`);
+    checar('classificou como live', r?.fonte === 'live', `→ ${r?.fonte}`);
+    console.log('');
+  }
+
+  // 10: transmissão já encerrada nunca volta a ser enviada
+  {
+    console.log('▶ transmissão encerrada (actualEndTime): rejeitada mesmo dentro do piso de horas');
+    // O search live sabe devolver transmissão recém-encerrada (índice defasado), e um evento
+    // da tarde (casamento, ensaio) encerrado às 17h caberia no piso de 7h da janela da
+    // noite. Encerrada é papel do fallback de gravação, nunca daqui.
+    const evento = [{ id: 'e', titulo: 'Casamento na igreja' }];
+    const detalhes = new Map([['e', {
+      id: 'e',
+      contentDetails: { duration: 'PT2H' },
+      liveStreamingDetails: {
+        scheduledStartTime: '2026-08-22T18:00:00.000Z',
+        actualStartTime: '2026-08-22T18:02:00.000Z',  // 15h02 BRT
+        actualEndTime: '2026-08-22T20:00:00.000Z',    // 17h00 BRT
+      },
+    }]]);
+    const r = escolherEm('2026-08-22T22:00:00.000Z', 'sabado-noite', evento, detalhes);
+
+    checar('não enviou nada', r === null, `→ ${r?.id || 'nenhum'}`);
+    console.log('');
+  }
+
+  // 11: broadcast agendado e abandonado não é o culto
+  {
+    console.log('▶ agendado para as 14h e nunca iniciado: rejeitado às 18h49');
+    // O "upcoming" da API guarda para sempre broadcasts agendados que nunca foram ao ar.
+    // Sem início real, a régua é a tolerância de atraso (60 min), não o piso de filtroHoras —
+    // senão o agendamento morto da tarde caberia na janela da noite.
+    const abandonado = [{ id: 'a', titulo: 'Transmissão da tarde' }];
+    const detalhes = new Map([['a', {
+      id: 'a',
+      contentDetails: { duration: 'P0D' },
+      liveStreamingDetails: { scheduledStartTime: '2026-08-22T17:00:00.000Z' }, // 14h00 BRT
+    }]]);
+    const r = escolherEm('2026-08-22T21:49:00.000Z', 'sabado-noite', abandonado, detalhes);
+
+    checar('não enviou nada', r === null, `→ ${r?.id || 'nenhum'}`);
+    console.log('');
+  }
+
+  // 12: culto atrasado continua valendo
+  {
+    console.log('▶ agendado para as 19h, ainda sem início às 19h25: aceito (culto atrasado)');
+    const atrasado = [{ id: 'd', titulo: 'Culto de Sábado' }];
+    const detalhes = new Map([['d', {
+      id: 'd',
+      contentDetails: { duration: 'P0D' },
+      liveStreamingDetails: { scheduledStartTime: '2026-08-22T22:00:00.000Z' }, // 19h00 BRT
+    }]]);
+    const r = escolherEm('2026-08-22T22:25:00.000Z', 'sabado-noite', atrasado, detalhes);
+
+    checar('achou o vídeo', r?.id === 'd', `→ ${r?.id || 'nenhum'}`);
+    console.log('');
+  }
+
+  console.log('═══ Janela de sábado (culto em teste) ═══\n');
+
+  // 13: a configuração da janela nova
+  {
+    console.log('▶ sábado 18h49 existe na tabela, sem aviso de atraso');
+    const sabado = janelaPor('sabado-noite');
+
+    checar('janela registrada', !!sabado);
+    checar('começa sábado às 18h49', sabado?.diaSemana === 6 && sabado?.hora === 18 && sabado?.minuto === 49);
+    checar('41 tentativas (até 19h30)', sabado?.maxTentativas === 41, `→ ${sabado?.maxTentativas}`);
+    checar('filtro de 7h, como as outras janelas da noite', sabado?.filtroHoras === 7, `→ ${sabado?.filtroHoras}`);
+    checar('aviso de atraso desligado (culto em teste)', sabado?.avisoAposMin === null, `→ ${sabado?.avisoAposMin}`);
+    checar('sem fallback de gravação', sabado?.fallbackGravacao === false);
+    console.log('');
+  }
+
   console.log('═══ Recuperação de janela perdida ═══\n');
 
-  // 7: a máquina sobe DEPOIS do minuto do cron
+  // 14: a máquina sobe DEPOIS do minuto do cron
   {
     console.log('▶ máquina sobe às 19h05 de domingo: o gatilho das 18h59 já passou');
     // 19h05 BRT = 22h05 UTC
@@ -147,7 +271,7 @@ function main() {
     console.log('');
   }
 
-  // 8: subida normal, alguns minutos ANTES — o cron ainda vai disparar
+  // 15: subida normal, alguns minutos ANTES — o cron ainda vai disparar
   {
     console.log('▶ máquina sobe às 18h54 de domingo: o cron das 18h59 ainda vai disparar');
     const r = janelaPerdida(new Date('2026-08-16T21:54:00.000Z'));
@@ -156,7 +280,7 @@ function main() {
     console.log('');
   }
 
-  // 9: dentro do próprio minuto agendado, quem manda é o cron
+  // 16: dentro do próprio minuto agendado, quem manda é o cron
   {
     console.log('▶ máquina sobe às 18h59 de domingo, no minuto do gatilho');
     const r = janelaPerdida(new Date('2026-08-16T21:59:30.000Z'));
@@ -165,7 +289,7 @@ function main() {
     console.log('');
   }
 
-  // 10: tarde demais, a janela já teria terminado
+  // 17: tarde demais, a janela já teria terminado
   {
     console.log('▶ máquina sobe às 20h00 de domingo: a janela da noite já acabou');
     const r = janelaPerdida(new Date('2026-08-16T23:00:00.000Z'));
@@ -174,12 +298,23 @@ function main() {
     console.log('');
   }
 
-  // 11: dia sem culto
+  // 18: dia sem culto
   {
     console.log('▶ máquina sobe numa segunda-feira');
     const r = janelaPerdida(new Date('2026-08-17T22:05:00.000Z'));
 
     checar('não recupera nada', r === null, `→ ${r?.janela.chave || 'nenhuma'}`);
+    console.log('');
+  }
+
+  // 19: a janela nova de sábado também é recuperada
+  {
+    console.log('▶ máquina sobe às 19h00 de sábado: o gatilho das 18h49 já passou');
+    // 19h00 BRT = 22h00 UTC; 22/08/2026 é sábado
+    const r = janelaPerdida(new Date('2026-08-22T22:00:00.000Z'));
+
+    checar('reconheceu a janela de sábado', r?.janela.chave === 'sabado-noite', `→ ${r?.janela.chave || 'nenhuma'}`);
+    checar('com o atraso certo', r?.atrasoMin === 11, `→ ${r?.atrasoMin} min`);
     console.log('');
   }
 
