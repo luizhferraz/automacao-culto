@@ -1,6 +1,6 @@
 # Automação de Culto: WhatsApp + YouTube
 
-Envia automaticamente os links das transmissões ao vivo (e estreias) para um canal de Avisos no WhatsApp, nos horários agendados. Roda na nuvem via Fly.io, sem precisar deixar o computador ligado.
+Envia automaticamente os links das transmissões ao vivo (e estreias) para um canal de Avisos no WhatsApp, nos horários agendados. Roda 24/7 numa VM `e2-micro` do Google Cloud (free tier, custo zero), como serviço do systemd — sem precisar deixar nenhum computador ligado. Migrado do Fly.io em 22/08/2026, quando o modelo liga-desliga por culto foi aposentado.
 
 ---
 
@@ -40,27 +40,30 @@ morre e renasce por desenho (fim de janela, teto de vida de 90 min, systemd reli
 perdida reexecutava a janela com a live ainda no ar. A recuperação consulta o registro antes
 de reabrir a janela, e o monitoramento consulta antes de enviar.
 
-**Ciclo automático (Fly.io + cron externo):**
-1. A máquina é ligada 5 min antes de cada janela
-2. O bot registra os horários e arma o teto de vida **antes** de qualquer coisa que dependa da rede
-3. Conecta no WhatsApp já na subida e atende os pedidos de reenvio acumulados na semana
-4. Monitora o YouTube a cada 1 minuto
-5. Ao encontrar a live → envia o link → encerra o monitoramento
+**Ciclo automático (VM no GCP + systemd):**
+1. A VM fica ligada 24/7; o bot roda como serviço (`culto-bot.service`) com `Restart=always`
+2. A cada subida, o bot registra os horários e arma o teto de vida **antes** de qualquer coisa que dependa da rede
+3. Conecta no WhatsApp já na subida e atende os pedidos de reenvio pendentes
+4. No horário de cada janela, o cron interno dispara e o YouTube é monitorado a cada 1 minuto
+5. Ao encontrar a live → envia o link → registra na memória de janela → encerra o monitoramento
 6. Mantém a conexão de pé enquanto chegarem pedidos de reenvio (veja abaixo)
-7. Ao fim da janela → a máquina se desliga automaticamente
+7. Ao fim da janela o processo se encerra — e o systemd o religa em ~10 s, reconectando. O
+   mesmo vale para o teto de vida (90 min): o processo se renova o dia inteiro nesse ciclo,
+   e a memória de janela em disco garante que nenhum renascimento repete envio
 
 A ordem do passo 2 não é estética. Enquanto a conexão da subida era aguardada antes do
-registro dos horários, ela era um **ponto único de falha silencioso para o dia inteiro**:
-qualquer coisa pendurada ali impedia ao mesmo tempo o agendamento da janela e o armamento do
-teto de vida. O resultado seria a máquina de pé, sem enviar nada e sem se encerrar — que é
-exatamente o estado que segura a sessão da conta e emudece o celular do dono. Hoje a conexão
-da subida é aquecimento, não pré-requisito: ela não é aguardada, e se a hora do envio chegar
-antes de ela terminar, o envio espera a **mesma** abertura em vez de abrir um segundo socket.
+registro dos horários, ela era um **ponto único de falha silencioso**: qualquer coisa
+pendurada ali impedia ao mesmo tempo o agendamento da janela e o armamento do teto de vida.
+O resultado seria o processo de pé, sem enviar nada e sem se renovar — que é exatamente o
+estado que segura a sessão da conta e emudece o celular do dono. Hoje a conexão da subida é
+aquecimento, não pré-requisito: ela não é aguardada, e se a hora do envio chegar antes de ela
+terminar, o envio espera a **mesma** abertura em vez de abrir um segundo socket.
 
-**Se a máquina subir atrasada**, depois do minuto agendado, o cron daquele dia já passou e não
-dispara mais. O bot detecta isso na subida e **recupera a janela**, com as tentativas
-descontadas do atraso (para o desligamento continuar no mesmo horário) e o aviso de atraso
-adiantado. Sem isso, subir 19h01 num domingo significava passar a noite de pé sem enviar nada.
+**Se o processo subir atrasado** — um restart (teto de vida, deploy, reboot da VM) caindo
+depois do minuto agendado de uma janela —, o cron daquele dia já passou e não dispara mais. O
+bot detecta isso na subida e **recupera a janela**, com as tentativas descontadas do atraso e
+o aviso de atraso adiantado, desde que o link do dia ainda não esteja registrado em disco.
+Sem isso, um restart às 19h01 de domingo significava perder a janela da noite inteira.
 
 ### Notificação no celular do dono
 
@@ -85,23 +88,25 @@ conexão viver: se o primeiro iq falhar, a volta seguinte conserta em vez de dei
 ativa pela janela inteira, e qualquer reativação vinda do servidor no meio dos ~50 minutos de
 socket aberto é desfeita. O resumo registra o total em `anunciosPassivos`.
 
-Ficar conectado deixou de ser inofensivo quando o tempo de socket aberto cresceu: somando a
-conexão na subida (~5 min), a janela de monitoramento (até 36 min) e a janela elástica de
-reenvio (até 10 min), são perto de **50 minutos seguidos, três vezes por semana**.
+Na era Fly o socket abria ~50 minutos, três vezes por semana. Na VM ele fica aberto
+**praticamente o tempo todo** (em ciclos de até 90 min, renovados pelo teto de vida), o que
+torna o anúncio de sessão passiva — e o seu reforço periódico — a peça central da proteção:
+é ele que permite um aparelho vinculado permanentemente online sem emudecer o celular do dono.
 
 Se o celular voltar a não notificar, confira nesta ordem:
 
 1. **`sessaoPassiva` no resumo da última janela** (falso = a conta passou a janela inteira
    marcada como sessão ativa).
-2. **A máquina está parada fora de janela?** Máquina de pé é socket aberto segurando a sessão.
-   O histórico de eventos do `fly machine status` mostra desde quando e por quê. Como rede de
-   segurança, o processo agora tem um teto de vida (`TETO_VIDA_MS`, 90 min): mesmo que tudo o
-   mais falhe, ele se encerra sozinho em vez de passar a noite de pé.
-3. **Secrets do Fly sobrepondo o código** (ver o quadro de cuidado mais abaixo).
-4. Se tudo acima estiver certo e o celular continuar mudo mesmo com a máquina parada, o estado
-   preso é do **próprio aparelho**: abra o WhatsApp em primeiro plano (ou force o fechamento e
-   abra de novo) para ele voltar a se registrar como a sessão ativa da conta. Em último caso,
-   desvincule o "Culto Bot" em Aparelhos conectados e pareie de novo pelo QR.
+2. **O ciclo de vida está girando?** `systemctl status culto-bot` mostra desde quando o
+   processo atual está de pé; mais de ~95 min sem renovar é sinal de teto de vida travado, e
+   processo pendurado é o estado que historicamente segurava a sessão da conta. O
+   `journalctl -u culto-bot` mostra os pares "Encerrando/Started" do ciclo normal.
+3. **Variáveis em `/etc/culto/culto.env` sobrepondo o código** (ver o quadro de cuidado mais
+   abaixo — o incidente aconteceu na era Fly, mas o mecanismo é o mesmo).
+4. Se tudo acima estiver certo e o celular continuar mudo, o estado preso é do **próprio
+   aparelho**: abra o WhatsApp em primeiro plano (ou force o fechamento e abra de novo) para
+   ele voltar a se registrar como a sessão ativa da conta. Em último caso, desvincule o
+   "Culto Bot" em Aparelhos conectados e pareie de novo pelo QR.
 
 ### O problema do "Aguardando mensagem"
 
@@ -117,7 +122,7 @@ marca o aparelho como atendido *antes* de conseguir criptografar para ele, e gra
 no disco mesmo quando a criptografia falha. Falha por destinatário é engolida em silêncio, e
 o envio só é considerado quebrado se falhar para **todos**.
 
-Isso foi medido no volume no domingo 02/08. De manhã o mapa foi zerado, os 845 aparelhos
+Isso foi medido em produção no domingo 02/08. De manhã o mapa foi zerado, os 845 aparelhos
 entraram na distribuição e todos foram marcados como atendidos. À noite o mapa foi lido cheio,
 a lista de destinatários da chave ficou **vazia**, e a mensagem das 18:59 saiu sem distribuir
 chave para ninguém. Quem falhou de manhã estava condenado a falhar de novo à noite. Como o
@@ -166,10 +171,12 @@ Cinco defesas:
    (últimas 200, validade de 30 dias). Se o pedido de reenvio só chegar dias depois, porque o
    celular estava desligado, o WhatsApp o entrega na próxima conexão do bot, e aí ele consegue
    reenviar mesmo tendo sido outra execução do processo.
-4. **Conexão na subida.** O socket abre quando o processo sobe, não na hora do envio. Assim os
-   ~5 min entre ligar a máquina e o culto servem para drenar a fila de pedidos que o WhatsApp
-   acumulou durante a semana, com a conexão ociosa. Cada pedido atendido faz o Baileys recriar
-   a sessão daquele aparelho, o que conserta gente travada desde o culto anterior.
+4. **Conexão na subida.** O socket abre quando o processo sobe, não na hora do envio. Cada
+   renascimento (fim de janela, teto de vida) reconecta e drena o que o WhatsApp tiver
+   enfileirado — e como o processo agora vive em ciclos de no máximo 90 min, a fila
+   praticamente não acumula: um pedido de reenvio espera minutos, não uma semana como na era
+   Fly. Cada pedido atendido faz o Baileys recriar a sessão daquele aparelho, o que conserta
+   gente travada desde o culto anterior.
 5. **Janela de reenvio elástica.** Depois do último envio a conexão fica aberta por pelo menos
    `RETRY_GRACE_MS`, e continua aberta enquanto chegarem pedidos, até o teto de
    `RETRY_GRACE_MAX_MS`. Relógio fixo era a coisa errada: o Baileys abandona em silêncio o que
@@ -179,7 +186,7 @@ Cinco defesas:
 Existe ainda uma sexta defesa, **desligada por padrão**: `FORCAR_SESSOES=1` recria as sessões
 de sinal em lote **na subida**, nos minutos ociosos antes do culto. Ela ataca o caso de quem
 reinstalou o WhatsApp ou trocou de aparelho, porque nesse cenário a sessão do lado da pessoa
-foi destruída mas o arquivo do bot continua intacto no volume, e a validação que o Baileys faz
+foi destruída mas o arquivo do bot continua intacto em disco, e a validação que o Baileys faz
 antes de distribuir a chave é puramente local: não tem como saber que o outro lado apagou a
 sessão dele.
 
@@ -190,14 +197,15 @@ nas sessões. Está desligada de novo. Com o filtro de ruído no lugar, a recria
 passa a acontecer sozinha e de forma **dirigida**: cada pedido de reenvio atendido faz o
 Baileys recriar a sessão daquele aparelho específico. Só volte a ligá-la com evidência nova.
 
-> **Cuidado com os secrets do Fly.** A configuração efetiva é a soma do código com os secrets
-> (`fly secrets list`), e secret esquecido sobrepõe o padrão do código em silêncio. Foi
-> exatamente o que aconteceu aqui: "desligada de novo" acima era verdade no código desde
-> 06/08, mas o `FORCAR_SESSOES=1` do experimento continuou como secret e valendo em produção
-> até 13/08 — o resumo de cada janela entregava a prova (`sessoesForcadas: 856`) sem ninguém
-> notar. Um `RETRY_GRACE_MS=1200000` da mesma época segurava o socket aberto 20 minutos em
-> toda janela. O workflow de deploy agora lista os **nomes** dos secrets a cada publicação e
-> remove essas sobras conhecidas.
+> **Cuidado com variáveis de ambiente esquecidas.** A configuração efetiva é a soma do código
+> com o `/etc/culto/culto.env` (que o systemd injeta via `EnvironmentFile`), e variável
+> esquecida sobrepõe o padrão do código em silêncio. O incidente que ensinou isso foi na era
+> Fly: "desligada de novo" acima era verdade no código desde 06/08, mas o `FORCAR_SESSOES=1`
+> de um experimento continuou como secret valendo em produção até 13/08 — o resumo de cada
+> janela entregava a prova (`sessoesForcadas: 856`) sem ninguém notar. Um
+> `RETRY_GRACE_MS=1200000` da mesma época segurava o socket aberto 20 minutos em toda janela.
+> A VM foi montada do zero só com o necessário (as sobras ficaram para trás na migração);
+> para auditar o que está valendo: `sudo cat /etc/culto/culto.env`.
 
 Não dá para ser cirúrgico aqui. Sessão obsoleta é, por construção, invisível do lado do bot:
 não existe log, erro ou sinal que aponte quem está nessa situação. Ou se recria tudo, ou não
@@ -210,8 +218,10 @@ envio. Se o preparo falhar por qualquer motivo, o link sai do mesmo jeito.
 
 ### Diagnóstico
 
-Os logs do Fly são só ao vivo: quando a máquina desliga, some tudo. Por isso cada janela grava
-em `/data/diagnostico/`:
+O diagnóstico nasceu na era Fly, quando os logs eram só ao vivo e evaporavam com a máquina.
+Na VM o `journalctl -u culto-bot` persiste tudo, mas o registro estruturado por janela
+continua sendo o que responde rápido às perguntas que importam — por isso cada janela grava
+em `/var/lib/culto/diagnostico/` (derivado do `AUTH_DIR`):
 
 - `<carimbo>.log`: as linhas do Baileys que decidem o diagnóstico de entrega,
   `sending new sender key` (a lista de aparelhos que receberam a chave) e
@@ -223,29 +233,30 @@ em `/data/diagnostico/`:
   vinculado ativo, e o celular do dono provavelmente ficou sem notificação) e `notas`.
 - `notas` é a linha do tempo do que o **bot decidiu**, que é diferente do que a biblioteca
   fez: início de cada janela, tentativas que falharam com o motivo, aviso de atraso enviado ou
-  não, e por que a janela terminou. Existe porque tudo o que o scheduler escreve vai para o
-  stdout, e o stdout morre junto com a máquina.
+  não, e por que a janela terminou. No journal essas linhas existem, mas misturadas a tudo o
+  mais; aqui elas vêm por janela e prontas para ler.
 
 O resumo é gravado **mesmo quando não houve sessão viva**, com `semSessao: true`. Antes, o
 encerramento sem sessão saía calado, e foi exatamente o que aconteceu no domingo 16/08: o
 socket da subida caiu antes da janela, nada foi enviado, o `sessao` já era nulo quando o
 SIGTERM chegou, o processo saiu em 677 ms — e a janela mais interessante do dia foi a **única
-sem resumo nenhum** no volume.
+sem resumo nenhum** em disco.
 
 O log é filtrado por uma lista de frases, não por nível. Medido em produção: em `debug` puro o
-Baileys escreve cerca de **1 MB por minuto** ao drenar a fila de uma semana, e quase tudo é
+Baileys escreve cerca de **1 MB por minuto** ao drenar uma fila acumulada, e quase tudo é
 falha de descriptografia de mensagem *recebida*, que não tem relação com o problema de
-entrega. Uma conexão ociosa de um dia encheria o volume de 1 GB. Com o filtro sobram algumas
-centenas de linhas por janela, e ainda existe o teto de `DIAG_MAX_BYTES` como rede.
+entrega. Com o filtro sobram algumas centenas de linhas por janela, e ainda existe o teto de
+`DIAG_MAX_BYTES` como rede.
 
-Ficam os 20 mais recentes. Para ler depois do culto:
+Ficam os 20 mais recentes. Para ler depois do culto (dentro da VM):
 
 ```bash
-fly ssh console --app culto-automacao -C "ls -la /data/diagnostico"
+ls -la /var/lib/culto/diagnostico
+cat /var/lib/culto/diagnostico/resumo-<carimbo>.json
 ```
 
-Se alguma gravação de estado de sinal falhar, o processo sai com código 1, o que aparece no
-`exit_code` do `fly machine status` mesmo depois que os logs somem.
+Se alguma gravação de estado de sinal falhar, o processo sai com código 1 — visível no
+`journalctl -u culto-bot` (linha de saída do serviço) e no `systemctl status culto-bot`.
 
 ### Qual vídeo é o culto de agora
 
@@ -311,10 +322,10 @@ culto-bot` na VM.
 
 ### 1. Pré-requisitos
 
-- Conta no [Fly.io](https://fly.io) (free tier)
+- Conta no [Google Cloud](https://console.cloud.google.com) com faturamento ativado (o free
+  tier exige cartão cadastrado, mas a configuração abaixo custa R$ 0/mês)
 - Conta no [GitHub](https://github.com)
-- [flyctl](https://fly.io/docs/hands-on/install-flyctl/) instalado
-- Node.js 20+
+- Node.js 20+ (na VM; instruções abaixo)
 
 ### 2. Clonar e instalar
 
@@ -324,19 +335,24 @@ cd culto-automation
 npm install
 ```
 
-### 3. Configurar o `.env`
+### 3. Configuração
+
+Para rodar **localmente** (testes, desenvolvimento), use um `.env` na raiz:
 
 ```bash
 cp .env.example .env
 ```
 
-Edite o `.env` com seus dados:
+Na **VM**, a configuração vive em `/etc/culto/culto.env` (o systemd a injeta via
+`EnvironmentFile` — o `.env` local não é usado lá). Conteúdo mínimo:
 
 ```
 YOUTUBE_API_KEY=AIzaSy...
 YOUTUBE_CHANNEL_ID=UCxxxxxx...
 WHATSAPP_GROUP_NAME=120363xxxxxxxxx@g.us
 TZ=America/Sao_Paulo
+AUTH_DIR=/var/lib/culto/baileys_auth
+BAILEYS_LOG_LEVEL=warn
 ```
 
 **Ajustes opcionais** (todos têm padrão, só defina se precisar mudar):
@@ -345,8 +361,8 @@ TZ=America/Sao_Paulo
 |----------|--------|----------------|
 | `RETRY_GRACE_MS` | `120000` | Piso da janela de reenvio: mínimo que a conexão fica aberta após o último envio |
 | `RETRY_QUIET_MS` | `45000` | Silêncio necessário para encerrar. Cada pedido de reenvio empurra o fechamento para frente |
-| `RETRY_GRACE_MAX_MS` | `600000` | Teto absoluto da janela, para a máquina não ficar de pé indefinidamente |
-| `RETRY_GRACE_SIGTERM_MS` | `3000` | Espera curta quando o Fly manda SIGTERM (aí não dá para segurar a janela inteira) |
+| `RETRY_GRACE_MAX_MS` | `600000` | Teto absoluto da janela, para o socket não ficar aberto indefinidamente |
+| `RETRY_GRACE_SIGTERM_MS` | `3000` | Espera curta quando o systemd manda SIGTERM (parada/restart do serviço; aí não dá para segurar a janela inteira) |
 | `FORCAR_SESSOES` | (desligado) | `1` recria as sessões de sinal em lote na subida. Ver a quinta defesa acima |
 | `LOTE_SESSOES` | `50` | Tamanho do lote acima. Um aparelho com erro derruba o lote inteiro, por isso é fatiado |
 | `PREPARO_TIMEOUT_MS` | `45000` | Prazo do preparo do grupo. Estourou, para onde está e deixa o envio seguir |
@@ -357,10 +373,10 @@ TZ=America/Sao_Paulo
 | `ESTREIA_FUTURO_MIN` | `90` | Quanto antes do horário marcado uma estreia já é aceita. Ver "Qual vídeo é o culto de agora" |
 | `TETO_VIDA_MS` | `5400000` | Teto de vida do processo (90 min). Rede de segurança: se nada encerrou o processo até aí, ele se encerra sozinho em vez de passar a noite com o socket aberto segurando a sessão da conta |
 | `YOUTUBE_TIMEOUT_MS` | `15000` | Prazo de cada chamada à API do YouTube. Sem ele, uma conexão pendurada congelava o monitoramento e o desligamento nunca acontecia |
-| `BAILEYS_LOG_LEVEL` | `warn` | Nível do log que vai para o stdout (o `fly logs`) |
-| `DIAG_DIR` | `/data/diagnostico` | Onde ficam os logs e resumos por janela |
+| `BAILEYS_LOG_LEVEL` | `warn` | Nível do log que vai para o stdout (o `journalctl`) |
+| `DIAG_DIR` | `<pai do AUTH_DIR>/diagnostico` | Onde ficam os logs e resumos por janela (na VM: `/var/lib/culto/diagnostico`) |
 | `DIAG_MAX_ARQUIVOS` | `20` | Quantos logs e quantos resumos manter |
-| `DIAG_MAX_BYTES` | `8388608` | Teto por arquivo de log (8 MB), para nunca encher o volume |
+| `DIAG_MAX_BYTES` | `8388608` | Teto por arquivo de log (8 MB), para nunca encher o disco |
 | `AUTH_DIR` | `.baileys_auth` | Onde ficam a sessão do WhatsApp e o histórico de mensagens enviadas |
 
 > **Como obter o `YOUTUBE_API_KEY`:**
@@ -378,63 +394,138 @@ TZ=America/Sao_Paulo
 > ```
 > Copie o ID no formato `120363xxxxxxxxx@g.us` do grupo correto.
 
-### 4. Deploy no Fly.io
+### 4. Criar a VM no GCP (free tier)
+
+O que garante o custo zero: **e2-micro**, região **us-east1/us-central1/us-west1**, disco
+**Standard** (não Balanced!) de até 30 GB, provisionamento padrão (não Spot), IP efêmero.
 
 ```bash
-fly auth login
-fly launch --name culto-automacao --no-deploy
-fly volumes create culto_data --size 1 --region iad
-fly secrets set YOUTUBE_API_KEY=... YOUTUBE_CHANNEL_ID=... WHATSAPP_GROUP_NAME=...
-fly deploy
+gcloud compute instances create culto-bot \
+  --zone=us-east1-b \
+  --machine-type=e2-micro \
+  --provisioning-model=STANDARD \
+  --image-family=debian-12 --image-project=debian-cloud \
+  --boot-disk-size=30GB --boot-disk-type=pd-standard
+```
+
+Dentro da VM (`gcloud compute ssh culto-bot --zone=us-east1-b`):
+
+```bash
+# Swap de 2 GB: com 1 GB de RAM, é o colchão contra o OOM killer
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+
+# Node 20, fuso e usuário dedicado
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs git
+sudo timedatectl set-timezone America/Sao_Paulo
+sudo useradd --system --create-home --home /var/lib/culto --shell /usr/sbin/nologin culto
+
+# Código e dependências (sem o Chromium do puppeteer, que não é usado)
+sudo git clone https://github.com/luizhferraz/automacao-culto.git /opt/automacao-culto
+sudo chown -R culto:culto /opt/automacao-culto
+cd /opt/automacao-culto
+sudo -u culto env PUPPETEER_SKIP_DOWNLOAD=1 PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 npm install --omit=dev
+
+# Dados e configuração
+sudo mkdir -p /var/lib/culto/baileys_auth && sudo chown -R culto:culto /var/lib/culto
+sudo mkdir -p /etc/culto && sudo nano /etc/culto/culto.env   # conteúdo do passo 3
+sudo chmod 600 /etc/culto/culto.env
+```
+
+A unit do systemd, em `/etc/systemd/system/culto-bot.service`:
+
+```ini
+[Unit]
+Description=Bot de automacao do culto (WhatsApp + YouTube)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=culto
+Group=culto
+WorkingDirectory=/opt/automacao-culto
+EnvironmentFile=/etc/culto/culto.env
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=10
+TimeoutStopSec=120
+MemoryMax=700M
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+O `Restart=always` é deliberado e obrigatório: o bot se encerra sozinho ao fim de cada janela
+e no teto de vida, contando com o systemd para renascer. A memória de janela em disco é quem
+garante que renascer nunca duplica envio.
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable culto-bot
 ```
 
 ### 5. Parear o WhatsApp via QR Code
 
 ```bash
-fly logs --app culto-automacao
+sudo systemctl start culto-bot
+sudo journalctl -u culto-bot -f -o cat
 ```
 
-Um QR Code aparecerá nos logs. Escaneie com o WhatsApp:
+Um QR Code aparecerá no log. Escaneie com o WhatsApp:
 > WhatsApp → Menu (⋮) → Aparelhos conectados → Conectar aparelho
 
-Após parear, a sessão fica salva no volume `/data/baileys_auth`. Não precisa escanear novamente a menos que o WhatsApp seja resetado.
+Após parear, a sessão fica salva em `/var/lib/culto/baileys_auth`. Não precisa escanear
+novamente a menos que o aparelho seja desvinculado.
 
-### 6. Configurar GitHub Actions (ligar a máquina automaticamente)
+### 6. Atualizar o bot (deploy)
 
-1. Gere um token do Fly.io:
-   ```bash
-   fly tokens create deploy -a culto-automacao -n "github-actions"
-   ```
-2. No repositório GitHub, vá em **Settings → Secrets → Actions**
-3. Crie um secret chamado `FLY_API_TOKEN` com o token gerado
+Não há deploy automatizado: atualização é `git pull` + restart, feita de propósito **fora**
+dos horários de culto (um deploy no meio de uma janela derruba o socket com o link a caminho;
+a recuperação de janela cobre, mas não há motivo para arriscar).
 
-O workflow `.github/workflows/start-bot.yml` já está configurado e vai ligar a máquina automaticamente nos horários certos.
+```bash
+cd /opt/automacao-culto
+sudo -u culto git pull
+sudo systemctl restart culto-bot
+sudo journalctl -u culto-bot -n 20 -o cat   # conferir a subida
+```
 
 ---
 
 ## Comandos úteis
 
+Todos dentro da VM (`gcloud compute ssh culto-bot --zone=us-east1-b`):
+
 ```bash
 # Ver logs em tempo real
-fly logs --app culto-automacao
+sudo journalctl -u culto-bot -f -o cat
 
-# Verificar status da máquina
-fly status --app culto-automacao
+# Últimas N linhas do log
+sudo journalctl -u culto-bot -n 50 -o cat
 
-# Ligar a máquina manualmente
-fly machine start 148ee339cee098 --app culto-automacao
+# Status do serviço (desde quando o processo atual está de pé, últimas linhas)
+sudo systemctl status culto-bot
 
-# Desligar a máquina manualmente
-fly machine stop 148ee339cee098 --app culto-automacao
+# Parar / iniciar / reiniciar o serviço
+sudo systemctl stop culto-bot
+sudo systemctl start culto-bot
+sudo systemctl restart culto-bot
 
-# Testar busca no YouTube
-node index.js --teste-youtube
+# O que cada janela já enviou hoje (memória de janela)
+cat /var/lib/culto/janelas-enviadas.json
 
-# Testar envio no WhatsApp
-node index.js --teste-envio
+# Resumos de diagnóstico por janela
+ls -la /var/lib/culto/diagnostico
 
-# Listar grupos/canais disponíveis
-node index.js --listar-grupos
+# Testar busca no YouTube (não envia nada; carrega o env da VM)
+sudo bash -c 'set -a; . /etc/culto/culto.env; set +a; cd /opt/automacao-culto && node index.js --teste-youtube'
+
+# Listar grupos/canais da conta pareada (precisa rodar como o usuário culto)
+sudo systemctl stop culto-bot   # evita duas conexões da mesma sessão
+cd /opt/automacao-culto && sudo -u culto env $(sudo grep -v '^#' /etc/culto/culto.env | xargs) node index.js --listar-grupos
+sudo systemctl start culto-bot
 ```
 
 ---
@@ -503,7 +594,7 @@ upload saiu junto com o filtro de título), o rascunho de transmissão sem data 
 caso de 22/08), o upload comum rejeitado, o título fora do padrão antigo aceito, a
 transmissão **encerrada** rejeitada, o agendamento **abandonado** da tarde rejeitado e o
 culto **atrasado** (até 60 min) aceito. Cobre também a configuração da janela de sábado e a
-recuperação de janela perdida: máquina subindo atrasada é recuperada (inclusive no sábado),
+recuperação de janela perdida: processo subindo atrasado é recuperado (inclusive no sábado),
 subindo no horário normal (ou dentro do próprio minuto do gatilho) **não** é, para não rodar
 a janela duas vezes, e a janela cujo link de hoje já está registrado em disco **não** é
 reaberta pela recuperação (o triplo envio de 23/08).
@@ -545,16 +636,19 @@ teste correspondente falha.
 
 ```
 culto-automation/
-├── index.js                # Ponto de entrada, inicialização, SIGTERM e auto-shutdown
-├── scheduler.js            # Agendamentos cron e lógica de monitoramento
+├── index.js                # Ponto de entrada, inicialização, SIGTERM e teto de vida
+├── scheduler.js            # Agendamentos cron, monitoramento e memória de janela em disco
 ├── youtube.js              # Busca de transmissões ao vivo via YouTube Data API
 ├── whatsapp.js             # Conexão e envio via Baileys (sessão única por janela)
 ├── mensagens-enviadas.js   # Histórico em disco, usado para atender pedidos de reenvio
-├── diagnostico.js          # Log filtrado e resumo por janela gravados no volume
-├── testes/                 # Aviso de atraso, escolha do vídeo, ciclo de reenvio e registro em disco
-├── fly.toml                # Configuração do Fly.io
-├── Dockerfile        # Imagem Docker (Node 20 Alpine)
+├── diagnostico.js          # Log filtrado e resumo por janela gravados em disco
+├── testes/                 # Aviso de atraso, escolha do vídeo, fiação da busca, reenvio e diagnóstico
+├── fly.toml                # Era Fly.io — aposentado na migração de 22/08, mantido como histórico
+├── Dockerfile              # Imagem Docker (Node 20 Alpine) — não usada na VM, que roda node direto
 └── .github/
-    └── workflows/
-        └── start-bot.yml  # GitHub Actions: liga a máquina antes dos cultos
+    └── workflows/          # Era Fly.io (start-bot, deploy, diagnostico) — aposentados; na VM
+                            # o deploy é git pull + systemctl restart
 ```
+
+A unit do systemd (`culto-bot.service`) e a configuração (`/etc/culto/culto.env`) não vivem
+no repositório — vivem na VM. O conteúdo de ambas está na seção "Configuração inicial".
