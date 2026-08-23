@@ -35,7 +35,8 @@ const GRACA_QUIETUDE_MS = Number(process.env.RETRY_QUIET_MS || 45000);
 const GRACA_MAXIMA_MS = Number(process.env.RETRY_GRACE_MAX_MS || 600000);
 const PASSO_ESPERA_MS = Number(process.env.RETRY_PASSO_MS || 5000);
 
-// Tempo curto usado quando o Fly manda SIGTERM: ali não dá para segurar a janela inteira.
+// Tempo curto usado quando o systemd manda SIGTERM (parada/restart do serviço): ali não dá
+// para segurar a janela inteira.
 const GRACA_SIGTERM_MS = Number(process.env.RETRY_GRACE_SIGTERM_MS || 3000);
 
 const TIMEOUT_CONEXAO_MS = Number(process.env.CONEXAO_TIMEOUT_MS || 30000);
@@ -627,13 +628,33 @@ async function conectar(chatId) {
  * apressar envio lento, e sim para transformar travamento permanente em erro, que o laço
  * registra e tenta de novo no minuto seguinte.
  *
- * O race não cancela o envio de baixo, então um envio que estourou o prazo e depois completa
- * pode virar link repetido no grupo. É o lado certo do risco: link duplicado é chato, link
- * nenhum é o bot não ter feito o trabalho dele. E o envio tardio ainda registra a mensagem no
- * histórico, que é o que atende os pedidos de reenvio.
+ * O race não cancela o envio de baixo, então um envio que estourou o prazo pode completar
+ * depois — e a mensagem entra no grupo do mesmo jeito. Por isso a conclusão tardia é
+ * REGISTRADA: o laço do scheduler consulta enviosConcluidosTardiamente antes de reenviar, e
+ * um estouro seguido de conclusão vira "já enviado" em vez de link repetido. Um envio que
+ * travou de verdade nunca resolve e não gera registro; aí o reenvio acontece, que é o lado
+ * escolhido do risco — link duplicado é chato, link nenhum é o bot não ter feito o trabalho
+ * dele. O envio tardio ainda registra a mensagem no histórico, que é o que atende os pedidos
+ * de reenvio.
  */
+const enviosTardios = [];
+
+function enviosConcluidosTardiamente(chatId, desdeMs) {
+  return enviosTardios.filter(e => e.chatId === chatId && e.em >= desdeMs);
+}
+
 async function enviarMensagem(chatId, mensagem) {
-  return comPrazo(enviarAgora(chatId, mensagem), PRAZO_ENVIO_MS, `envio para ${chatId}`);
+  const emCurso = enviarAgora(chatId, mensagem);
+  try {
+    return await comPrazo(emCurso, PRAZO_ENVIO_MS, `envio para ${chatId}`);
+  } catch (err) {
+    emCurso.then((id) => {
+      enviosTardios.push({ chatId, id, texto: mensagem, em: Date.now() });
+      if (enviosTardios.length > 20) enviosTardios.shift();
+      console.warn(`[WhatsApp] Envio que estourou o prazo completou depois (id ${id}); registrado para o laço não duplicar.`);
+    }, () => { /* também falhou de verdade: nada a registrar */ });
+    throw err;
+  }
 }
 
 async function enviarAgora(chatId, mensagem) {
@@ -855,7 +876,7 @@ async function iniciarCliente() {
       if (connection === 'close') {
         const codigo = new Boom(lastDisconnect?.error)?.output?.statusCode;
         if (codigo === DisconnectReason.loggedOut) {
-          console.error('❌ Sessão encerrada (logout). Delete /data/baileys_auth e reinicie.');
+          console.error(`❌ Sessão encerrada (logout). Delete ${AUTH_DIR} e reinicie.`);
           process.exit(1);
         }
         if (state.creds.me) {
@@ -889,6 +910,7 @@ module.exports = {
   iniciarCliente,
   conectar,
   enviarMensagem,
+  enviosConcluidosTardiamente,
   encerrarSessao,
   estaConectado,
   listarTodosChats,

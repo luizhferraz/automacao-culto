@@ -64,6 +64,9 @@ let queryQuebrado = false;
 // Pendura o sendMessage para sempre. Reproduz o travamento silencioso do domingo 16/08, em
 // que a janela inteira congelou dentro de um await que nunca voltou.
 let envioPendurado = false;
+// Atrasa o sendMessage por N ms mas deixa ele COMPLETAR: é o envio que estoura o prazo do
+// enviarMensagem e conclui depois — a mensagem chega ao grupo com o chamador já vendo erro.
+let envioAtrasadoMs = 0;
 // Pendura a busca da versão do WhatsApp Web, que no Baileys é um fetch sem prazo nenhum.
 let versaoPendurada = false;
 let gravacoesConcluidas = 0;
@@ -134,6 +137,10 @@ function criarSocketFalso(opcoes) {
     },
     sendMessage: async (jid, conteudo) => {
       if (envioPendurado) return new Promise(() => {});
+      if (envioAtrasadoMs) {
+        const espera = envioAtrasadoMs;
+        await new Promise(r => setTimeout(r, espera));
+      }
       const id = `MSGFALSA${++contadorId}`;
 
       // Reproduz o que o Baileys faz no ramo de grupo do relayMessage: lê a memória de
@@ -247,6 +254,7 @@ function reiniciar() {
   metadataQuebrado = false;
   queryQuebrado = false;
   envioPendurado = false;
+  envioAtrasadoMs = 0;
   versaoPendurada = false;
 }
 
@@ -755,6 +763,34 @@ async function main() {
     envioPendurado = false;
     const seguinte = await comLimiteDoTeste(whatsapp.enviarMensagem('grupo@g.us', 'link do culto'), 3000);
     checar('a tentativa seguinte enviou normalmente', !!seguinte.resolveu, `→ ${seguinte.resolveu || seguinte.rejeitou?.message}`);
+    await whatsapp.encerrarSessao();
+    console.log('');
+  }
+
+  // 12b: envio que estoura o prazo mas COMPLETA depois: a conclusão tardia fica registrada,
+  // que é o que o laço do scheduler consulta antes de reenviar (sem isto, estouro seguido de
+  // conclusão era o único jeito de duplicar o link sem nenhum restart)
+  {
+    reiniciar();
+    console.log('▶ envio que estoura o prazo e completa depois: conclusão tardia registrada');
+    envioAtrasadoMs = 900; // acima dos 600ms de ENVIO_TIMEOUT_MS do teste
+
+    const inicio = Date.now();
+    const r = await comLimiteDoTeste(whatsapp.enviarMensagem('grupo@g.us', 'link do culto'), 3000);
+
+    checar('o chamador viu erro no prazo', !!r.rejeitou, `→ ${r.rejeitou?.message || 'não rejeitou'}`);
+    checar(
+      'sem registro tardio enquanto o envio não completa',
+      whatsapp.enviosConcluidosTardiamente('grupo@g.us', inicio).length === 0
+    );
+
+    // Deixa o envio de baixo completar.
+    await new Promise(resolver => setTimeout(resolver, 700));
+    const tardios = whatsapp.enviosConcluidosTardiamente('grupo@g.us', inicio);
+    checar('a conclusão tardia foi registrada', tardios.length === 1, `→ ${tardios.length}`);
+    checar('com o texto original, que distingue link de aviso', tardios[0]?.texto === 'link do culto');
+    checar('e com o id devolvido pelo envio', /^MSGFALSA/.test(tardios[0]?.id || ''), `→ ${tardios[0]?.id}`);
+
     await whatsapp.encerrarSessao();
     console.log('');
   }

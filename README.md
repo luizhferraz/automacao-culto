@@ -31,14 +31,31 @@ Se o primeiro envio do aviso falhar, o bot tenta de novo na tentativa seguinte, 
 A janela de sábado não tem aviso (`avisoAposMin: null`): enquanto o culto de sábado for
 experimento, sábado sem transmissão é resultado esperado, não incidente para anunciar no grupo.
 
-**Memória de janela em disco:** o que cada janela já fez hoje — link enviado, aviso dado —
-fica registrado em `janelas-enviadas.json`, ao lado do diretório de credenciais. O processo
-morre e renasce por desenho (fim de janela, teto de vida de 90 min, systemd religando com
-`Restart=always`), e nada disso pode apagar a memória do que já foi enviado: no domingo
-**23/08**, sem esse registro, o link da manhã saiu **três vezes** — o exit do fim da janela
-(que no Fly deixava a máquina desligada) virou restart no systemd, e a recuperação de janela
-perdida reexecutava a janela com a live ainda no ar. A recuperação consulta o registro antes
-de reabrir a janela, e o monitoramento consulta antes de enviar.
+**Memória de janela em disco:** o que cada janela já fez hoje — link enviado, aviso dado,
+gravação do fallback enviada, janela esgotada sem link — fica registrado em
+`janelas-enviadas.json`, ao lado do diretório de credenciais. O processo morre e renasce por
+desenho (fim de janela, teto de vida de 90 min, systemd religando com `Restart=always`), e
+nada disso pode apagar a memória do que já foi enviado: no domingo **23/08**, sem esse
+registro, o link da manhã saiu repetido — o exit do fim da janela (que no Fly deixava a
+máquina desligada) virou restart no systemd, e a recuperação de janela perdida reexecutava a
+janela com a live ainda no ar. A recuperação consulta o registro antes de reabrir a janela,
+e o monitoramento consulta antes de enviar.
+
+Três reforços do mesmo registro:
+
+- **Escrita atômica** (arquivo temporário + rename): disco cheio no meio da escrita não pode
+  truncar o JSON — arquivo ilegível vale como "nunca enviei", que é a política certa para
+  primeiro uso e a errada para corrupção.
+- **Arquivo reserva dentro do `AUTH_DIR`**: se a gravação principal falhar (permissão errada
+  no diretório pai, fs read-only), a marca vai para `$AUTH_DIR/janelas-enviadas.json` — um
+  diretório que, se o envio acabou de funcionar, comprovadamente aceita escrita. A leitura é
+  a união dos dois arquivos. Sem isso, uma falha de escrita repetida era o pior loop
+  possível: envio → exit → restart → recuperação sem memória → reenvio, a cada ~3 min até a
+  janela expirar.
+- **Envios tardios**: o prazo de 2 min do envio não cancela o envio de baixo — um envio que
+  estoura o prazo e completa depois entra no grupo com o laço achando que falhou. A conclusão
+  tardia fica registrada, e a tentativa seguinte a absorve (marca a janela e encerra) em vez
+  de reenviar. Era o único jeito de duplicar o link sem nenhum restart.
 
 **Ciclo automático (VM no GCP + systemd):**
 1. A VM fica ligada 24/7; o bot roda como serviço (`culto-bot.service`) com `Restart=always`
@@ -59,11 +76,37 @@ estado que segura a sessão da conta e emudece o celular do dono. Hoje a conexã
 aquecimento, não pré-requisito: ela não é aguardada, e se a hora do envio chegar antes de ela
 terminar, o envio espera a **mesma** abertura em vez de abrir um segundo socket.
 
+> **⚠️ A era Fly ainda não morreu sozinha — e ela envia link em duplicata.** A máquina do
+> Fly (`culto-automacao`, machine `148ee339cee098`) continua existindo, com **volume próprio
+> de credenciais do WhatsApp** — ou seja, um segundo aparelho vinculado, com o código antigo,
+> que envia o link por conta própria toda vez que alguém a liga. E quem a ligava, minutos
+> antes de **cada** culto, é o **cron-job.org** — um agendador externo que a migração não
+> desligou e que nada neste repositório alcança. É a explicação mais provável para o envio
+> extra de 23/08 que o journal da VM não mostra (o journal só evidencia o ciclo local de
+> restart). Os três workflows do GitHub que ligavam/deployavam essa máquina foram removidos
+> do repositório; o resto é ação manual, nesta ordem:
+>
+> 1. **Fly**: `fly machine destroy 148ee339cee098 --app culto-automacao --force`, depois
+>    `fly volumes destroy` do volume `culto_data` (é ele que guarda as credenciais) e
+>    `fly apps destroy culto-automacao`. Com a máquina destruída, qualquer start remanescente
+>    do cron-job.org falha inofensivamente — por isso este é o primeiro passo.
+> 2. **cron-job.org**: apagar (ou pausar) os jobs que ligam a máquina antes dos cultos.
+> 3. **WhatsApp** (celular do dono): Aparelhos conectados → desvincular o aparelho da era Fly
+>    (o registro na conta sobrevive à destruição da máquina; cuidado para **não** desvincular
+>    o aparelho da VM).
+> 4. **GitHub**: apagar o secret `FLY_API_TOKEN` do repositório e revogá-lo no Fly
+>    (`fly tokens revoke`) — sem isso, qualquer workflow futuro poderia reusar o token.
+
 **Se o processo subir atrasado** — um restart (teto de vida, deploy, reboot da VM) caindo
-depois do minuto agendado de uma janela —, o cron daquele dia já passou e não dispara mais. O
-bot detecta isso na subida e **recupera a janela**, com as tentativas descontadas do atraso e
-o aviso de atraso adiantado, desde que o link do dia ainda não esteja registrado em disco.
-Sem isso, um restart às 19h01 de domingo significava perder a janela da noite inteira.
+depois do **segundo 0** do minuto agendado de uma janela —, o cron daquele dia já passou e
+não dispara mais (o node-cron só dispara no segundo 0). O bot detecta isso na subida e
+**recupera a janela**, com as tentativas descontadas do atraso e o aviso de atraso adiantado,
+desde que o link do dia não esteja registrado em disco e a janela não tenha sido esgotada
+hoje. A recuperação vale **desde o atraso zero**: um boot dentro do próprio minuto do gatilho
+(9h54m08s, digamos) também já perdeu o cron do dia, e o piso antigo de 1 minuto transformava
+esses ~59 segundos numa zona morta que matava a janela inteira em silêncio. O cron ainda roda
+com `recoverMissedExecutions`, para um tick que pule o segundo 0 (pausa de GC, CPU da
+e2-micro estrangulada) não perder o gatilho com o processo vivo.
 
 ### Notificação no celular do dono
 
@@ -582,7 +625,10 @@ chega antes do prazo, aviso seguido do link quando ele chega depois, reenvio sem
 quando o primeiro envio falha, a janela **sem** aviso (sábado, `avisoAposMin: null`)
 segurando a mensagem pelas 41 tentativas completas, e a memória de janela em disco: a mesma
 janela executada de novo (o restart do systemd de 23/08) **não** reenvia o link nem repete o
-aviso de atraso.
+aviso de atraso; a janela **esgotada** sem link nem chega a reabrir; o envio que estoura o
+prazo e completa depois é **absorvido** na tentativa seguinte (link e aviso) em vez de
+reenviado; a gravação do fallback executada duas vezes sai **uma** só; e a falha de escrita
+do registro principal cai no arquivo **reserva** dentro do `AUTH_DIR`.
 
 **`testes/simular-youtube.js`** roda a regra real de escolha do vídeo, sem rede, com os **dois
 cultos do mesmo domingo** na playlist — o caso que qualquer ajuste de horas erra. Cobre: a
@@ -594,10 +640,11 @@ upload saiu junto com o filtro de título), o rascunho de transmissão sem data 
 caso de 22/08), o upload comum rejeitado, o título fora do padrão antigo aceito, a
 transmissão **encerrada** rejeitada, o agendamento **abandonado** da tarde rejeitado e o
 culto **atrasado** (até 60 min) aceito. Cobre também a configuração da janela de sábado e a
-recuperação de janela perdida: processo subindo atrasado é recuperado (inclusive no sábado),
-subindo no horário normal (ou dentro do próprio minuto do gatilho) **não** é, para não rodar
-a janela duas vezes, e a janela cujo link de hoje já está registrado em disco **não** é
-reaberta pela recuperação (o triplo envio de 23/08).
+recuperação de janela perdida: processo subindo atrasado é recuperado (inclusive no sábado, e
+inclusive **dentro do minuto do gatilho** — a zona morta em que o segundo 0 do cron já passou),
+subindo **antes** do horário **não** é, para não rodar a janela duas vezes, e nem a janela
+cujo link de hoje já está registrado em disco (o triplo envio de 23/08) nem a que já se
+esgotou sem link são reabertas pela recuperação.
 
 **`testes/simular-busca.js`** exercita a fiação completa de `buscarTransmissaoAoVivo` e
 `buscarUltimaGravacao` com o axios trocado por dublê: o Método 1 validando o resultado do
@@ -621,7 +668,9 @@ e as duas mensagens de uma mesma janela reaproveitando uma única conexão. Cobr
 travamentos silenciosos do domingo 16/08: **envio pendurado virando erro** (com a tentativa
 seguinte enviando normalmente), **a busca da versão do WhatsApp Web pendurada não impedindo o
 link de sair**, **a conexão da subida em curso não gerando um segundo socket** quando o envio
-chega junto, e o **resumo sendo gravado mesmo sem sessão viva**.
+chega junto, e o **resumo sendo gravado mesmo sem sessão viva**. E o primo do envio pendurado:
+o envio que estoura o prazo mas **completa depois** fica registrado como conclusão tardia,
+com o texto e o id — é o registro que o scheduler consulta antes de reenviar.
 
 **`testes/simular-diagnostico.js`** cobre o registro em disco: o filtro descartando o ruído do
 Baileys e preservando as linhas que identificam quem não recebeu, a poda tratando logs e
@@ -644,11 +693,13 @@ culto-automation/
 ├── diagnostico.js          # Log filtrado e resumo por janela gravados em disco
 ├── testes/                 # Aviso de atraso, escolha do vídeo, fiação da busca, reenvio e diagnóstico
 ├── fly.toml                # Era Fly.io — aposentado na migração de 22/08, mantido como histórico
-├── Dockerfile              # Imagem Docker (Node 20 Alpine) — não usada na VM, que roda node direto
-└── .github/
-    └── workflows/          # Era Fly.io (start-bot, deploy, diagnostico) — aposentados; na VM
-                            # o deploy é git pull + systemctl restart
+└── Dockerfile              # Imagem Docker (Node 20 Alpine) — não usada na VM, que roda node direto
 ```
+
+Os workflows do GitHub da era Fly (start-bot, deploy, diagnostico) foram **removidos** em
+23/08: cada um era um botão de um clique que ligava a máquina antiga — um segundo aparelho
+WhatsApp que enviaria o link em duplicata (ver o quadro de cuidado em "Como funciona"). Na
+VM o deploy é `git pull` + `systemctl restart`; os YAMLs seguem no histórico do git.
 
 A unit do systemd (`culto-bot.service`) e a configuração (`/etc/culto/culto.env`) não vivem
 no repositório — vivem na VM. O conteúdo de ambas está na seção "Configuração inicial".
