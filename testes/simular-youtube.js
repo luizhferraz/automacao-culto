@@ -14,8 +14,16 @@
  * Uso: node testes/simular-youtube.js
  */
 
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+
+// A memória de janela em disco (janelas-enviadas.json) mora ao lado do AUTH_DIR; sem isto o
+// teste escreveria o arquivo na raiz do repositório. Precisa vir ANTES do require do scheduler.
+process.env.AUTH_DIR = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'culto-youtube-')), 'baileys_auth');
+
 const { escolherPorHorario } = require('../youtube');
-const { JANELAS, janelaPerdida } = require('../scheduler');
+const { JANELAS, janelaPerdida, marcarJanela } = require('../scheduler');
 
 let falhas = 0;
 function checar(descricao, condicao, detalhe = '') {
@@ -315,6 +323,19 @@ function main() {
 
     checar('reconheceu a janela de sábado', r?.janela.chave === 'sabado-noite', `→ ${r?.janela.chave || 'nenhuma'}`);
     checar('com o atraso certo', r?.atrasoMin === 11, `→ ${r?.atrasoMin} min`);
+    console.log('');
+  }
+
+  // 20: janela cujo link já saiu hoje não volta como "perdida"
+  {
+    console.log('▶ link do dia já registrado em disco: a recuperação não reabre a janela');
+    // O triplo envio de 23/08 por inteiro: envia → desligar() → exit → systemd religa → a
+    // recuperação reentrava aqui com a live ainda no ar e enviava de novo. O registro em
+    // disco é o que corta o ciclo — o cenário 14 acima é o mesmo instante SEM o registro.
+    marcarJanela('link', 'domingo-noite', { url: 'https://y/x' }, new Date('2026-08-16T22:05:00.000Z'));
+    const r = janelaPerdida(new Date('2026-08-16T22:05:00.000Z'));
+
+    checar('não recupera a janela já enviada', r?.janela?.chave !== 'domingo-noite', `→ ${r?.janela?.chave || 'nenhuma'}`);
     console.log('');
   }
 

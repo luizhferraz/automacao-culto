@@ -31,6 +31,15 @@ Se o primeiro envio do aviso falhar, o bot tenta de novo na tentativa seguinte, 
 A janela de sábado não tem aviso (`avisoAposMin: null`): enquanto o culto de sábado for
 experimento, sábado sem transmissão é resultado esperado, não incidente para anunciar no grupo.
 
+**Memória de janela em disco:** o que cada janela já fez hoje — link enviado, aviso dado —
+fica registrado em `janelas-enviadas.json`, ao lado do diretório de credenciais. O processo
+morre e renasce por desenho (fim de janela, teto de vida de 90 min, systemd religando com
+`Restart=always`), e nada disso pode apagar a memória do que já foi enviado: no domingo
+**23/08**, sem esse registro, o link da manhã saiu **três vezes** — o exit do fim da janela
+(que no Fly deixava a máquina desligada) virou restart no systemd, e a recuperação de janela
+perdida reexecutava a janela com a live ainda no ar. A recuperação consulta o registro antes
+de reabrir a janela, e o monitoramento consulta antes de enviar.
+
 **Ciclo automático (Fly.io + cron externo):**
 1. A máquina é ligada 5 min antes de cada janela
 2. O bot registra os horários e arma o teto de vida **antes** de qualquer coisa que dependa da rede
@@ -479,8 +488,10 @@ dublês. Nenhuma delas toca no YouTube ou no WhatsApp de verdade.
 **`testes/simular-aviso.js`** exercita `monitorarAoVivo` com relógio simulado (sem esperar 36
 minutos). Cobre: aviso no minuto certo nas janelas que o têm, aviso suprimido quando o link
 chega antes do prazo, aviso seguido do link quando ele chega depois, reenvio sem duplicação
-quando o primeiro envio falha, e a janela **sem** aviso (sábado, `avisoAposMin: null`)
-segurando a mensagem pelas 41 tentativas completas.
+quando o primeiro envio falha, a janela **sem** aviso (sábado, `avisoAposMin: null`)
+segurando a mensagem pelas 41 tentativas completas, e a memória de janela em disco: a mesma
+janela executada de novo (o restart do systemd de 23/08) **não** reenvia o link nem repete o
+aviso de atraso.
 
 **`testes/simular-youtube.js`** roda a regra real de escolha do vídeo, sem rede, com os **dois
 cultos do mesmo domingo** na playlist — o caso que qualquer ajuste de horas erra. Cobre: a
@@ -492,9 +503,10 @@ upload saiu junto com o filtro de título), o rascunho de transmissão sem data 
 caso de 22/08), o upload comum rejeitado, o título fora do padrão antigo aceito, a
 transmissão **encerrada** rejeitada, o agendamento **abandonado** da tarde rejeitado e o
 culto **atrasado** (até 60 min) aceito. Cobre também a configuração da janela de sábado e a
-recuperação de janela perdida: máquina subindo atrasada é recuperada (inclusive no sábado), e
+recuperação de janela perdida: máquina subindo atrasada é recuperada (inclusive no sábado),
 subindo no horário normal (ou dentro do próprio minuto do gatilho) **não** é, para não rodar
-a janela duas vezes.
+a janela duas vezes, e a janela cujo link de hoje já está registrado em disco **não** é
+reaberta pela recuperação (o triplo envio de 23/08).
 
 **`testes/simular-busca.js`** exercita a fiação completa de `buscarTransmissaoAoVivo` e
 `buscarUltimaGravacao` com o axios trocado por dublê: o Método 1 validando o resultado do

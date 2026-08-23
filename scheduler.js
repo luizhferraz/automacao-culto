@@ -1,4 +1,6 @@
 const cron = require('node-cron');
+const fs = require('fs');
+const path = require('path');
 const { buscarTransmissaoAoVivo, buscarUltimaGravacao } = require('./youtube');
 const { enviarMensagem, encerrarSessao, estaConectado } = require('./whatsapp');
 const diagnostico = require('./diagnostico');
@@ -15,6 +17,57 @@ const FOLGA_JANELA_MIN = 5;
 const FUSO = 'America/Sao_Paulo';
 
 let tentativasAtivas = {};
+
+// ── Memória de janela em disco ───────────────────────────────────────────────
+// O processo morre e renasce por desenho: o desligar() ao fim da janela, o teto de vida de
+// 90 min, e o systemd religando tudo com Restart=always. Nada que precise sobreviver a isso
+// pode morar em variável — foi a lição do domingo 23/08, quando o link da manhã saiu TRÊS
+// vezes: o exit do desligar (que no Fly deixava a máquina desligada, restart policy never)
+// virou restart no systemd, e a recuperação de janela perdida, sem memória de "já enviei",
+// reexecutava a janela com a live ainda no ar — envio, exit, restart, recuperação, envio.
+//
+// O arquivo registra o que cada ocorrência de janela (chave + dia no fuso da igreja) já fez:
+// o link enviado e o aviso de atraso. A recuperação consulta antes de reexecutar, e o
+// monitoramento consulta antes de enviar. Falha de leitura vale como "não enviado": na
+// dúvida, é melhor arriscar um reenvio (o dano de 23/08) do que uma janela muda.
+const ARQUIVO_JANELAS = path.join(path.dirname(process.env.AUTH_DIR || '.baileys_auth'), 'janelas-enviadas.json');
+
+function diaNaIgreja(momento = new Date()) {
+  // en-CA formata como YYYY-MM-DD. O dia precisa ser o da igreja, não o do relógio do
+  // processo: perto da meia-noite UTC os dois divergem e a chave do registro mudaria de dia.
+  return new Intl.DateTimeFormat('en-CA', { timeZone: FUSO, year: 'numeric', month: '2-digit', day: '2-digit' }).format(momento);
+}
+
+function lerJanelasMarcadas() {
+  try {
+    return JSON.parse(fs.readFileSync(ARQUIVO_JANELAS, 'utf8'));
+  } catch {
+    return {}; // primeiro uso ou arquivo ilegível
+  }
+}
+
+// tipo: 'link' (o envio da janela) ou 'aviso' (o aviso de atraso).
+function marcarJanela(tipo, chave, extra = {}, momento = new Date()) {
+  try {
+    const todas = lerJanelasMarcadas();
+    todas[`${tipo}:${chave}@${diaNaIgreja(momento)}`] = { em: new Date(momento).toISOString(), ...extra };
+    // Poda: só o registro de hoje decide alguma coisa; uma semana ajuda diagnóstico sem o
+    // arquivo crescer para sempre.
+    const corte = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    for (const [k, v] of Object.entries(todas)) {
+      if (new Date(v.em).getTime() < corte) delete todas[k];
+    }
+    fs.writeFileSync(ARQUIVO_JANELAS, JSON.stringify(todas, null, 2));
+  } catch (err) {
+    // Nunca pode derrubar o envio que acabou de acontecer. Sem o registro o risco é um
+    // reenvio no próximo restart — ruim, mas menor que falhar aqui.
+    console.warn(`[Scheduler] Não consegui registrar ${tipo} de ${chave} em disco:`, err.message);
+  }
+}
+
+function janelaMarcada(tipo, chave, momento = new Date()) {
+  return Boolean(lerJanelasMarcadas()[`${tipo}:${chave}@${diaNaIgreja(momento)}`]);
+}
 
 // ── Janelas ──────────────────────────────────────────────────────────────────
 // Uma tabela só, usada pelo cron e pela recuperação de janela perdida da subida. Enquanto
@@ -112,6 +165,15 @@ function monitorarAoVivo({ chave, maxTentativas, nomeGrupo, apiKey, channelId, f
     console.log(`[Scheduler] Monitoramento ${chave} já está ativo, ignorando.`);
     return Promise.resolve(null);
   }
+
+  // A memória em disco, não a de processo: se o link desta janela já saiu hoje — por este
+  // processo ou por um antecessor que morreu no meio —, não há mais nada a fazer. O null
+  // segue o mesmo contrato do guarda acima: quem chama não desliga nem aciona fallback.
+  if (janelaMarcada('link', chave)) {
+    console.log(`[Scheduler] Janela ${chave} já enviou o link hoje (registro em disco). Nada a fazer.`);
+    diagnostico.anotar(`janela ${chave}: ignorada, link de hoje já registrado em disco`);
+    return Promise.resolve(null);
+  }
   tentativasAtivas[chave] = 0;
   console.log(`\n[Scheduler] ▶ Iniciando monitoramento: ${chave} (máx ${maxTentativas} tentativas)`);
   diagnostico.anotar(`janela ${chave}: início, até ${maxTentativas} tentativas, filtro ${filtroHoras}h, aviso ${avisoAposMin === null ? 'desligado' : `após ${avisoAposMin} min`}`);
@@ -135,6 +197,10 @@ function monitorarAoVivo({ chave, maxTentativas, nomeGrupo, apiKey, channelId, f
           const video = await buscarTransmissaoAoVivo(apiKey, channelId, filtroHoras, n);
           if (video) {
             await enviarMensagem(nomeGrupo, mensagemParaVideo(video));
+            // O registro em disco vem logo após o envio: é ele que impede o sucessor deste
+            // processo (restart do systemd após o desligar, ou após o teto de vida) de
+            // enviar o mesmo link de novo pela recuperação de janela perdida.
+            marcarJanela('link', chave, { url: video.url, fonte: video.fonte, tentativa: n });
             console.log(`[Scheduler] ✅ Link enviado (${video.fonte}): ${video.url}`);
             diagnostico.anotar(`janela ${chave}: link enviado na tentativa ${n} (${video.fonte}) ${video.url}`);
             delete tentativasAtivas[chave];
@@ -152,10 +218,15 @@ function monitorarAoVivo({ chave, maxTentativas, nomeGrupo, apiKey, channelId, f
         // avisoEnviado só vira true se o envio deu certo, então uma falha aqui
         // é reavaliada na próxima tentativa.
         const minutosSemLink = (Date.now() - inicio) / 60000;
-        if (avisoAposMin !== null && !avisoEnviado && minutosSemLink >= avisoAposMin) {
+        // O janelaMarcada cobre o processo renascido: sem ele, um restart no meio da janela
+        // (teto de vida) perdia o avisoEnviado da memória e o grupo recebia o aviso duas
+        // vezes. O avisoEnviado continua existindo para poupar a leitura de disco por
+        // tentativa depois que o aviso sai.
+        if (avisoAposMin !== null && !avisoEnviado && minutosSemLink >= avisoAposMin && !janelaMarcada('aviso', chave)) {
           try {
             await enviarMensagem(nomeGrupo, mensagemAtraso());
             avisoEnviado = true;
+            marcarJanela('aviso', chave);
             console.log(`[Scheduler] ⚠️  Aviso de atraso enviado ao grupo (${minutosSemLink.toFixed(1)} min sem link).`);
             diagnostico.anotar(`janela ${chave}: aviso de atraso enviado (${minutosSemLink.toFixed(1)} min sem link)`);
           } catch (err) {
@@ -267,7 +338,9 @@ async function desligar(motivo) {
   } catch (err) {
     console.error('[Scheduler] Erro ao encerrar a sessão do WhatsApp:', err.message);
   }
-  console.log('Encerrando processo. A máquina será desligada pelo Fly.io.');
+  // Na VM o systemd religa o processo em seguida (Restart=always) — e pode religar: a
+  // memória de janela em disco garante que o sucessor não reenvia nada.
+  console.log('Encerrando processo. O systemd religa em seguida; o registro em disco impede reenvio.');
   // Código diferente de zero quando alguma gravação de estado de sinal falhou: o exit_code
   // aparece no histórico de eventos do `fly machine status`, então serve de alerta mesmo
   // depois que os logs somem.
@@ -325,6 +398,11 @@ function janelaPerdida(momento = new Date()) {
 
   for (const janela of JANELAS) {
     if (janela.diaSemana !== diaSemana) continue;
+    // Janela cujo link já saiu hoje não é "perdida" — está concluída. Sem esta linha, o
+    // restart que o systemd faz após o desligar() reentrava aqui com a live ainda no ar e
+    // reenviava o link (o triplo envio de 23/08). O guarda dentro do monitorarAoVivo é a
+    // segunda defesa; este é o que impede até de reabrir a janela.
+    if (janelaMarcada('link', janela.chave, momento)) continue;
     const atrasoMin = minutosDoDia - inicioEmMinutos(janela);
     if (atrasoMin >= 1 && atrasoMin < janela.maxTentativas) return { janela, atrasoMin };
   }
@@ -333,5 +411,6 @@ function janelaPerdida(momento = new Date()) {
 
 // monitorarAoVivo e mensagemAtraso são exportados para permitir testes automatizados
 // (ver testes/simular-aviso.js), que rodam a função real com relógio simulado. JANELAS e
-// agoraNaIgreja saem junto para o teste da recuperação de janela perdida.
-module.exports = { iniciarAgendamentos, monitorarAoVivo, mensagemAtraso, JANELAS, janelaPerdida };
+// agoraNaIgreja saem junto para o teste da recuperação de janela perdida; marcarJanela e
+// janelaMarcada, para os testes da memória de janela em disco.
+module.exports = { iniciarAgendamentos, monitorarAoVivo, mensagemAtraso, JANELAS, janelaPerdida, marcarJanela, janelaMarcada };
