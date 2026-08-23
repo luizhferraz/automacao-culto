@@ -9,6 +9,12 @@
  */
 
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
+
+// A memória de janela em disco (janelas-enviadas.json) mora ao lado do AUTH_DIR; sem isto o
+// teste escreveria o arquivo na raiz do repositório. Precisa vir ANTES do require do scheduler.
+process.env.AUTH_DIR = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'culto-aviso-')), 'baileys_auth');
 
 const CAMINHO_YOUTUBE = require.resolve('../youtube');
 const CAMINHO_WHATSAPP = require.resolve('../whatsapp');
@@ -188,6 +194,38 @@ async function main() {
     checar('nenhum aviso enviado na janela inteira', r.avisos.length === 0, `(enviados: ${r.avisos.length})`);
     checar('nenhum link enviado', r.links.length === 0);
     checar('função retornou false', r.enviouLink === false);
+    console.log('');
+  }
+
+  // Cenário 6: o triplo envio de 23/08 — o processo renasce e a janela NÃO reenvia
+  {
+    const janela = JANELAS['domingo-manha'];
+    console.log('▶ mesma janela executada de novo (restart do systemd): registro em disco segura o reenvio');
+    // No dia real: link enviado às ~10h, desligar() → exit → systemd religa → recuperação de
+    // janela perdida reexecutava com a live ainda no ar → link de novo, três vezes. Aqui as
+    // duas execuções usam a MESMA chave, como dois processos sucessivos fariam.
+    let n = 0;
+    const r1 = await cenario('link-1a-vez', janela, 'manha-restart', () => (++n >= 2 ? VIDEO_FALSO : null));
+    checar('primeira execução enviou o link', r1.enviouLink === true && r1.links.length === 1);
+
+    const r2 = await cenario('link-2a-vez', janela, 'manha-restart', () => VIDEO_FALSO);
+    checar('segunda execução não enviou NADA', r2.links.length === 0, `(links: ${r2.links.length})`);
+    checar('e retornou null (nem desliga, nem fallback)', r2.enviouLink === null, `→ ${r2.enviouLink}`);
+    console.log('');
+  }
+
+  // Cenário 7: o aviso de atraso também não repete quando o processo renasce
+  {
+    const janela = JANELAS['quarta-noite'];
+    console.log('▶ janela sem link reexecutada (restart no meio): aviso de atraso não sai duas vezes');
+    const r1 = await cenario('aviso-1a-vez', janela, 'quarta-restart', () => null);
+    checar('primeira execução avisou 1 vez', r1.avisos.length === 1, `(avisos: ${r1.avisos.length})`);
+
+    // O link nunca saiu, então a janela em si PODE reexecutar (é o papel da recuperação);
+    // só o aviso é que não pode repetir.
+    const r2 = await cenario('aviso-2a-vez', janela, 'quarta-restart', () => null);
+    checar('segunda execução rodou a janela', r2.enviouLink === false, `→ ${r2.enviouLink}`);
+    checar('mas não repetiu o aviso', r2.avisos.length === 0, `(avisos: ${r2.avisos.length})`);
     console.log('');
   }
 
