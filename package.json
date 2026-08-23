@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Automação para envio de links do culto via WhatsApp",
   "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node index.js",
     "setup": "node index.js --setup",

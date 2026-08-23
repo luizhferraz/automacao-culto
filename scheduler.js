@@ -2,7 +2,7 @@ const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
 const { buscarTransmissaoAoVivo, buscarUltimaGravacao } = require('./youtube');
-const { enviarMensagem, encerrarSessao, estaConectado } = require('./whatsapp');
+const { enviarMensagem, encerrarSessao, estaConectado, enviosConcluidosTardiamente } = require('./whatsapp');
 const diagnostico = require('./diagnostico');
 
 // Intervalo entre tentativas (minutos)
@@ -27,10 +27,21 @@ let tentativasAtivas = {};
 // reexecutava a janela com a live ainda no ar — envio, exit, restart, recuperação, envio.
 //
 // O arquivo registra o que cada ocorrência de janela (chave + dia no fuso da igreja) já fez:
-// o link enviado e o aviso de atraso. A recuperação consulta antes de reexecutar, e o
-// monitoramento consulta antes de enviar. Falha de leitura vale como "não enviado": na
-// dúvida, é melhor arriscar um reenvio (o dano de 23/08) do que uma janela muda.
-const ARQUIVO_JANELAS = path.join(path.dirname(process.env.AUTH_DIR || '.baileys_auth'), 'janelas-enviadas.json');
+// o link enviado, o aviso de atraso, a gravação do fallback e o encerramento sem link. A
+// recuperação consulta antes de reexecutar, e o monitoramento consulta antes de enviar.
+// Falha de leitura vale como "não enviado": na dúvida, é melhor arriscar um reenvio (o dano
+// de 23/08) do que uma janela muda.
+//
+// Existe um arquivo RESERVA dentro do próprio AUTH_DIR. Quando um envio acabou de funcionar,
+// aquele diretório comprovadamente aceita escrita (o estado de sinal do Baileys mora nele);
+// já o diretório pai pode estar com permissão errada ou read-only sem que nada mais denuncie.
+// Sem a reserva, uma falha de escrita repetida degenerava no pior loop possível: envio →
+// exit → restart → recuperação sem memória → reenvio, uma dúzia de links até a janela
+// expirar — o 23/08 em dobro. A leitura é a UNIÃO dos dois arquivos: marca em qualquer um
+// deles vale.
+const DIR_AUTH = process.env.AUTH_DIR || '.baileys_auth';
+const ARQUIVO_JANELAS = path.join(path.dirname(DIR_AUTH), 'janelas-enviadas.json');
+const ARQUIVO_JANELAS_RESERVA = path.join(DIR_AUTH, 'janelas-enviadas.json');
 
 function diaNaIgreja(momento = new Date()) {
   // en-CA formata como YYYY-MM-DD. O dia precisa ser o da igreja, não o do relógio do
@@ -38,16 +49,34 @@ function diaNaIgreja(momento = new Date()) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: FUSO, year: 'numeric', month: '2-digit', day: '2-digit' }).format(momento);
 }
 
-function lerJanelasMarcadas() {
+function lerArquivoDeJanelas(caminho) {
   try {
-    return JSON.parse(fs.readFileSync(ARQUIVO_JANELAS, 'utf8'));
+    return JSON.parse(fs.readFileSync(caminho, 'utf8'));
   } catch {
     return {}; // primeiro uso ou arquivo ilegível
   }
 }
 
-// tipo: 'link' (o envio da janela) ou 'aviso' (o aviso de atraso).
+function lerJanelasMarcadas() {
+  // A reserva entra por baixo e o principal ganha por chave. Para decidir "já enviei hoje?"
+  // o que importa é a união: uma marca gravada só na reserva ainda é uma marca.
+  return { ...lerArquivoDeJanelas(ARQUIVO_JANELAS_RESERVA), ...lerArquivoDeJanelas(ARQUIVO_JANELAS) };
+}
+
+// tmp + rename no mesmo diretório: ou o arquivo antigo continua íntegro, ou o novo aparece
+// inteiro. O writeFileSync direto truncava o JSON quando o disco enchia no meio da escrita,
+// e um arquivo truncado zera a memória INTEIRA — a leitura ilegível vale como "nunca enviei",
+// que é a política certa para primeiro uso e a errada para corrupção.
+function gravarAtomico(caminho, conteudo) {
+  const tmp = `${caminho}.tmp`;
+  fs.writeFileSync(tmp, conteudo);
+  fs.renameSync(tmp, caminho);
+}
+
+// tipo: 'link' (o envio da janela), 'aviso' (o aviso de atraso), 'gravacao' (o fallback de
+// gravação) ou 'encerrada' (a janela rodou até o fim sem link — não deve ser reaberta).
 function marcarJanela(tipo, chave, extra = {}, momento = new Date()) {
+  let conteudo;
   try {
     const todas = lerJanelasMarcadas();
     todas[`${tipo}:${chave}@${diaNaIgreja(momento)}`] = { em: new Date(momento).toISOString(), ...extra };
@@ -57,11 +86,31 @@ function marcarJanela(tipo, chave, extra = {}, momento = new Date()) {
     for (const [k, v] of Object.entries(todas)) {
       if (new Date(v.em).getTime() < corte) delete todas[k];
     }
-    fs.writeFileSync(ARQUIVO_JANELAS, JSON.stringify(todas, null, 2));
+    conteudo = JSON.stringify(todas, null, 2);
   } catch (err) {
-    // Nunca pode derrubar o envio que acabou de acontecer. Sem o registro o risco é um
-    // reenvio no próximo restart — ruim, mas menor que falhar aqui.
-    console.warn(`[Scheduler] Não consegui registrar ${tipo} de ${chave} em disco:`, err.message);
+    console.warn(`[Scheduler] Não consegui montar o registro ${tipo} de ${chave}:`, err.message);
+    return false;
+  }
+
+  try {
+    gravarAtomico(ARQUIVO_JANELAS, conteudo);
+    return true;
+  } catch (err) {
+    console.warn(`[Scheduler] Não consegui registrar ${tipo} de ${chave} em ${ARQUIVO_JANELAS}:`, err.message);
+  }
+
+  try {
+    fs.mkdirSync(DIR_AUTH, { recursive: true });
+    gravarAtomico(ARQUIVO_JANELAS_RESERVA, conteudo);
+    diagnostico.anotar(`memória de janela: principal falhou, ${tipo}:${chave} gravado na reserva ${ARQUIVO_JANELAS_RESERVA}`);
+    return true;
+  } catch (err) {
+    // Nunca pode derrubar o envio que acabou de acontecer. Mas precisa gritar: sem NENHUMA
+    // gravação, o próximo restart reenvia — e sob Restart=always isso não é um reenvio, é
+    // um por ciclo até a janela expirar.
+    console.error(`[Scheduler] Memória de janela sem nenhuma gravação (${tipo} de ${chave}):`, err.message);
+    diagnostico.anotar(`memória de janela: FALHOU nas duas gravações (${tipo}:${chave}) — risco de reenvio a cada restart até a janela expirar`);
+    return false;
   }
 }
 
@@ -174,6 +223,14 @@ function monitorarAoVivo({ chave, maxTentativas, nomeGrupo, apiKey, channelId, f
     diagnostico.anotar(`janela ${chave}: ignorada, link de hoje já registrado em disco`);
     return Promise.resolve(null);
   }
+  // Janela que já rodou até o fim hoje também não reabre. O janelaPerdida é quem impede isso
+  // no caminho normal; este guarda é a segunda defesa, e devolve null pelo mesmo contrato —
+  // em especial para o fallback de gravação não rodar uma segunda vez.
+  if (janelaMarcada('encerrada', chave)) {
+    console.log(`[Scheduler] Janela ${chave} já foi executada até o fim hoje (registro em disco). Nada a fazer.`);
+    diagnostico.anotar(`janela ${chave}: ignorada, já encerrada hoje segundo o registro em disco`);
+    return Promise.resolve(null);
+  }
   tentativasAtivas[chave] = 0;
   console.log(`\n[Scheduler] ▶ Iniciando monitoramento: ${chave} (máx ${maxTentativas} tentativas)`);
   diagnostico.anotar(`janela ${chave}: início, até ${maxTentativas} tentativas, filtro ${filtroHoras}h, aviso ${avisoAposMin === null ? 'desligado' : `após ${avisoAposMin} min`}`);
@@ -186,6 +243,29 @@ function monitorarAoVivo({ chave, maxTentativas, nomeGrupo, apiKey, channelId, f
     async function tentar() {
       tentativasAtivas[chave]++;
       const n = tentativasAtivas[chave];
+
+      // Envio que estourou o prazo mas completou depois: a mensagem JÁ está no grupo. O
+      // comPrazo do enviarMensagem não cancela o envio de baixo, então a tentativa anterior
+      // pode ter "falhado" com o link a caminho — reenviar aqui era o único jeito de duplicar
+      // sem nenhum restart. O registro do whatsapp.js é evidência concreta (o envio tardio
+      // devolveu id); um envio que travou de verdade nunca resolve e não gera registro, e aí
+      // o reenvio continua acontecendo, que é o lado escolhido do risco.
+      for (const tardio of enviosConcluidosTardiamente(nomeGrupo, inicio)) {
+        if (tardio.texto === mensagemAtraso()) {
+          if (!avisoEnviado && !janelaMarcada('aviso', chave)) {
+            avisoEnviado = true;
+            marcarJanela('aviso', chave, { tardio: true, id: tardio.id });
+            diagnostico.anotar(`janela ${chave}: aviso de atraso completou num envio tardio (id ${tardio.id}); não será repetido`);
+          }
+        } else {
+          marcarJanela('link', chave, { tardio: true, id: tardio.id });
+          console.log(`[Scheduler] ✅ O link já tinha saído num envio tardio (id ${tardio.id}); nada a reenviar.`);
+          diagnostico.anotar(`janela ${chave}: link completou num envio tardio (id ${tardio.id}); janela encerrada sem reenvio`);
+          delete tentativasAtivas[chave];
+          resolve(true);
+          return;
+        }
+      }
 
       if (!estaConectado()) {
         console.warn('[Scheduler] WhatsApp não conectado, aguardando...');
@@ -244,6 +324,10 @@ function monitorarAoVivo({ chave, maxTentativas, nomeGrupo, apiKey, channelId, f
         const motivo = estourouORelogio ? `${Math.round((Date.now() - inicio) / 60000)} min de janela` : `${maxTentativas} tentativas`;
         console.error(`[Scheduler] 🚨 ALERTA: Nenhuma transmissão encontrada em ${chave} após ${motivo}. NENHUM LINK FOI ENVIADO AO GRUPO.`);
         diagnostico.anotar(`janela ${chave}: encerrada sem link após ${motivo}`);
+        // A janela rodou até o fim: registra para nenhum restart reabri-la. Sem isto, uma
+        // morte abrupta logo após o fallback de gravação reabria a janela pela recuperação
+        // (o 'link' nunca foi marcado) e a gravação saía duas vezes.
+        marcarJanela('encerrada', chave, { motivo });
         delete tentativasAtivas[chave];
         resolve(false);
         return;
@@ -256,8 +340,17 @@ function monitorarAoVivo({ chave, maxTentativas, nomeGrupo, apiKey, channelId, f
   });
 }
 
-async function enviarGravacao(nomeGrupo, apiKey, channelId) {
+async function enviarGravacao(chave, nomeGrupo, apiKey, channelId) {
   console.log('\n[Scheduler] ▶ Buscando gravação recente do culto...');
+
+  // A gravação tem a mesma memória em disco do link. Sem ela, um restart abrupto logo após o
+  // envio reabria a janela pela recuperação (o 'link' nunca foi marcado numa janela sem live)
+  // e o fallback mandava a mesma gravação de novo.
+  if (janelaMarcada('gravacao', chave)) {
+    console.log(`[Scheduler] Gravação de ${chave} já enviada hoje (registro em disco). Nada a fazer.`);
+    diagnostico.anotar(`fallback de gravação: ignorado, gravação de hoje já registrada em disco (${chave})`);
+    return;
+  }
 
   if (!estaConectado()) {
     console.warn('[Scheduler] WhatsApp não conectado.');
@@ -268,6 +361,7 @@ async function enviarGravacao(nomeGrupo, apiKey, channelId) {
     const video = await buscarUltimaGravacao(apiKey, channelId);
     if (video) {
       await enviarMensagem(nomeGrupo, mensagemGravacao(video.titulo, video.url));
+      marcarJanela('gravacao', chave, { url: video.url });
       console.log(`[Scheduler] ✅ Gravação enviada: ${video.url}`);
       diagnostico.anotar(`gravação enviada como fallback: ${video.url}`);
     } else {
@@ -315,7 +409,7 @@ async function executarJanela(janela, config, atrasoMin = 0) {
 
     if (!enviou && janela.fallbackGravacao) {
       console.log('[Scheduler] Ao vivo não encontrado, tentando gravação recente...');
-      await enviarGravacao(nomeGrupo, apiKey, channelId);
+      await enviarGravacao(janela.chave, nomeGrupo, apiKey, channelId);
     }
   } catch (err) {
     // Nada aqui dentro deveria escapar, mas uma exceção solta com o desligar embaixo do try
@@ -341,9 +435,9 @@ async function desligar(motivo) {
   // Na VM o systemd religa o processo em seguida (Restart=always) — e pode religar: a
   // memória de janela em disco garante que o sucessor não reenvia nada.
   console.log('Encerrando processo. O systemd religa em seguida; o registro em disco impede reenvio.');
-  // Código diferente de zero quando alguma gravação de estado de sinal falhou: o exit_code
-  // aparece no histórico de eventos do `fly machine status`, então serve de alerta mesmo
-  // depois que os logs somem.
+  // Código diferente de zero quando alguma gravação de estado de sinal falhou: o exit code
+  // aparece na linha de saída do serviço no `journalctl -u culto-bot` e no
+  // `systemctl status culto-bot`, então serve de alerta sem depender do log do bot.
   const codigo = resumo?.falhasDeGravacao > 0 ? 1 : 0;
   setTimeout(() => process.exit(codigo), 3000); // 3s para os logs fluírem
 }
@@ -351,21 +445,28 @@ async function desligar(motivo) {
 /**
  * Registra as janelas no cron e recupera a que já começou, se a máquina subiu atrasada.
  *
- * A recuperação existe porque o cron dispara em UM minuto do dia e não olha para trás: quem
- * sobe às 19h01 nunca vê o gatilho das 18h59, e o processo passa a noite inteira de pé sem
- * fazer nada — sem link, sem aviso, e com o socket do WhatsApp aberto segurando a sessão da
- * conta, que é o que emudece o celular do dono.
+ * A recuperação existe porque o cron dispara em UM segundo do dia e não olha para trás: o
+ * node-cron transforma o padrão de 5 campos em "segundo 0 do minuto agendado", então quem
+ * sobe às 19h01 — ou às 18h59m08s — nunca vê o gatilho das 18h59, e o processo passa a noite
+ * inteira de pé sem fazer nada: sem link, sem aviso, e com o socket do WhatsApp aberto
+ * segurando a sessão da conta, que é o que emudece o celular do dono.
  *
- * A margem de um minuto é o que impede a recuperação de brigar com o cron: dentro do minuto
- * agendado quem manda é o cron, e a recuperação só entra quando ele já não pode mais disparar
- * hoje. O guarda de `tentativasAtivas` no monitorarAoVivo é a segunda linha de defesa.
+ * A recuperação NÃO briga com o cron: os dois vivem no mesmo processo, e o guarda síncrono de
+ * `tentativasAtivas` no monitorarAoVivo (incrementado antes de qualquer await) faz a segunda
+ * entrada receber null e sair sem tocar em nada. O janelaMarcada em disco é a terceira defesa.
  */
 function iniciarAgendamentos(config) {
   for (const janela of JANELAS) {
     cron.schedule(
       `${janela.minuto} ${janela.hora} * * ${janela.diaSemana}`,
       () => executarJanela(janela, config),
-      { timezone: FUSO }
+      // recoverMissedExecutions: o node-cron checa o relógio num tick de ~1s; um tick que
+      // pule o segundo 0 (pausa de GC, CPU da e2-micro estrangulada, drift do setTimeout)
+      // perdia o gatilho com o processo VIVO, e nada mais chamava a janela — a recuperação
+      // da subida só roda no boot. Com a opção ligada, o tick seguinte reconstrói o segundo
+      // pulado. Disparo em dobro não acontece: o lastExecution do node-cron impede o mesmo
+      // segundo duas vezes, e os guardas do monitorarAoVivo seguram o resto.
+      { timezone: FUSO, recoverMissedExecutions: true }
     );
   }
 
@@ -389,9 +490,14 @@ function iniciarAgendamentos(config) {
 /**
  * A janela que já começou e cujo gatilho do cron não vai mais disparar hoje, se houver.
  *
- * O piso de 1 minuto é deliberado: dentro do minuto agendado o cron ainda dispara, e
- * recuperar ali daria duas execuções da mesma janela. Acima do minuto, o gatilho de hoje é
- * passado e ninguém mais vai chamá-la.
+ * O piso é atraso ZERO, e isso é deliberado. O node-cron só dispara no segundo 0 do minuto
+ * agendado; um processo que renasce DENTRO do minuto do gatilho (o teto de vida ou o fim de
+ * uma janela derrubando o processo às 9h53m5x, systemd religando ~12s depois) sobe com o
+ * segundo 0 já passado — o cron de hoje nunca mais dispara, e um piso de 1 minuto deixava a
+ * janela morrer inteira nessa zona morta de ~59s, sem link e sem aviso, com o log parecendo
+ * saudável. Recuperar com atraso 0 não duplica nada: no caso raríssimo de o boot cair no
+ * próprio segundo 0 e o cron também disparar, os dois vivem no mesmo processo e o guarda
+ * síncrono de tentativasAtivas faz o segundo receber null.
  */
 function janelaPerdida(momento = new Date()) {
   const { diaSemana, minutosDoDia } = agoraNaIgreja(momento);
@@ -403,8 +509,11 @@ function janelaPerdida(momento = new Date()) {
     // reenviava o link (o triplo envio de 23/08). O guarda dentro do monitorarAoVivo é a
     // segunda defesa; este é o que impede até de reabrir a janela.
     if (janelaMarcada('link', janela.chave, momento)) continue;
+    // Janela que rodou até o fim sem link também está concluída. Reabri-la não traria link
+    // nenhum (as tentativas do dia já se esgotaram) e podia duplicar a gravação do fallback.
+    if (janelaMarcada('encerrada', janela.chave, momento)) continue;
     const atrasoMin = minutosDoDia - inicioEmMinutos(janela);
-    if (atrasoMin >= 1 && atrasoMin < janela.maxTentativas) return { janela, atrasoMin };
+    if (atrasoMin >= 0 && atrasoMin < janela.maxTentativas) return { janela, atrasoMin };
   }
   return null;
 }
@@ -412,5 +521,6 @@ function janelaPerdida(momento = new Date()) {
 // monitorarAoVivo e mensagemAtraso são exportados para permitir testes automatizados
 // (ver testes/simular-aviso.js), que rodam a função real com relógio simulado. JANELAS e
 // agoraNaIgreja saem junto para o teste da recuperação de janela perdida; marcarJanela e
-// janelaMarcada, para os testes da memória de janela em disco.
-module.exports = { iniciarAgendamentos, monitorarAoVivo, mensagemAtraso, JANELAS, janelaPerdida, marcarJanela, janelaMarcada };
+// janelaMarcada, para os testes da memória de janela em disco; enviarGravacao, para o teste
+// de que a gravação do fallback não sai duas vezes.
+module.exports = { iniciarAgendamentos, monitorarAoVivo, mensagemAtraso, JANELAS, janelaPerdida, marcarJanela, janelaMarcada, enviarGravacao };

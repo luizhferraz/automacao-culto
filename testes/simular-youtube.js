@@ -288,12 +288,18 @@ function main() {
     console.log('');
   }
 
-  // 16: dentro do próprio minuto agendado, quem manda é o cron
+  // 16: dentro do próprio minuto do gatilho, o segundo 0 já passou — a zona morta
   {
-    console.log('▶ máquina sobe às 18h59 de domingo, no minuto do gatilho');
+    console.log('▶ máquina sobe às 18h59m30s de domingo, dentro do minuto do gatilho');
+    // O node-cron só dispara no segundo 0 do minuto agendado; um boot no segundo 30 nunca
+    // vê o gatilho de hoje. O piso antigo de 1 minuto ("deixa o cron trabalhar") transformava
+    // esses ~59s numa zona morta que matava a janela inteira em silêncio — bastava o teto de
+    // vida derrubar o processo às 18h58m5x. A corrida rara do boot no próprio segundo 0 é
+    // absorvida pelo guarda síncrono de tentativasAtivas: a segunda entrada recebe null.
     const r = janelaPerdida(new Date('2026-08-16T21:59:30.000Z'));
 
-    checar('deixa o cron trabalhar', r === null, `→ ${r?.janela.chave || 'nenhuma'}`);
+    checar('recupera a janela na zona morta do minuto do gatilho', r?.janela.chave === 'domingo-noite', `→ ${r?.janela.chave || 'nenhuma'}`);
+    checar('com atraso zero', r?.atrasoMin === 0, `→ ${r?.atrasoMin} min`);
     console.log('');
   }
 
@@ -336,6 +342,18 @@ function main() {
     const r = janelaPerdida(new Date('2026-08-16T22:05:00.000Z'));
 
     checar('não recupera a janela já enviada', r?.janela?.chave !== 'domingo-noite', `→ ${r?.janela?.chave || 'nenhuma'}`);
+    console.log('');
+  }
+
+  // 21: janela que rodou até o fim sem link também não volta como "perdida"
+  {
+    console.log('▶ janela do dia já encerrada sem link: a recuperação não a reabre');
+    // Sem isto, um restart abrupto logo após o fallback de gravação reabria a janela (o
+    // 'link' nunca foi marcado numa janela sem live) e a gravação saía uma segunda vez.
+    marcarJanela('encerrada', 'quarta-noite', {}, new Date('2026-08-19T23:10:00.000Z'));
+    const r = janelaPerdida(new Date('2026-08-19T23:10:00.000Z')); // quarta 20h10 BRT, atraso 16
+
+    checar('não recupera a janela encerrada', r === null, `→ ${r?.janela?.chave || 'nenhuma'}`);
     console.log('');
   }
 

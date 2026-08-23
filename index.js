@@ -10,13 +10,13 @@ const config = {
 };
 
 // ── Teto de vida do processo ─────────────────────────────────────────────────
-// Rede de segurança para a máquina nunca passar a noite de pé. O ciclo normal cabe em
-// ~55 min: ligada pelo cron-job.org minutos antes do culto, janela de até 36 min, reenvio
-// de até 10 min, e o desligar do scheduler encerra o processo. Qualquer coisa fora disso —
-// uma espera de rede pendurada, o cron que não disparou porque a máquina subiu depois do
-// minuto agendado — deixava o processo vivo indefinidamente, com o socket do WhatsApp
-// aberto. Socket aberto é um aparelho vinculado segurando a sessão da conta, e é o que faz
-// o celular do dono parar de receber notificação até alguém notar e desligar na mão.
+// Rede de segurança para o processo nunca passar a noite de pé. O ciclo normal na VM é o
+// processo se encerrar sozinho ao fim de cada janela (e o systemd religar); fora de janela,
+// é este teto que renova o processo. Qualquer coisa fora disso — uma espera de rede
+// pendurada, um gatilho que não disparou — deixava o processo vivo indefinidamente, com o
+// socket do WhatsApp aberto. Socket aberto é um aparelho vinculado segurando a sessão da
+// conta, e é o que faz o celular do dono parar de receber notificação até alguém notar e
+// reiniciar na mão.
 const TETO_VIDA_MS = Number(process.env.TETO_VIDA_MS || 90 * 60 * 1000);
 
 function validarConfig() {
@@ -120,9 +120,9 @@ async function main() {
   conectar(config.nomeGrupo);
 }
 
-// O Fly manda SIGTERM quando para a máquina. Sem tratar o sinal, o processo morre no meio
-// das gravações do estado de sinal do WhatsApp, e a mensagem do culto seguinte já sai
-// impossível de descriptografar para quem estava naquela sessão.
+// O systemd manda SIGTERM ao parar ou reiniciar o serviço. Sem tratar o sinal, o processo
+// morre no meio das gravações do estado de sinal do WhatsApp, e a mensagem do culto seguinte
+// já sai impossível de descriptografar para quem estava naquela sessão.
 let encerrando = false;
 async function encerrarComGraca(sinal) {
   if (encerrando) return;
@@ -130,15 +130,17 @@ async function encerrarComGraca(sinal) {
   console.log(`\n${sinal} recebido. Fechando a sessão do WhatsApp antes de sair...`);
   let resumo = null;
   try {
-    // Piso e teto iguais e curtos: o Fly já está contando o kill_timeout, e ultrapassá-lo
-    // significa SIGKILL com gravações de estado de sinal em voo.
+    // Piso e teto iguais e curtos: quem mandou o SIGTERM quer o processo fora (deploy,
+    // restart, reboot), e segurar a janela de reenvio inteira aqui atrasaria isso à toa. O
+    // TimeoutStopSec do systemd (120s) dá folga larga; quem quiser mais atendimento de
+    // reenvio no restart pode subir RETRY_GRACE_SIGTERM_MS no culto.env.
     resumo = await encerrarSessao({ graca: GRACA_SIGTERM_MS, teto: GRACA_SIGTERM_MS });
   } catch (err) {
     console.error('Erro ao encerrar a sessão:', err.message);
   }
   // Sai com código diferente de zero quando alguma gravação de estado de sinal falhou. O
-  // `fly machine status` mostra o exit_code no histórico de eventos, então isso vira alerta
-  // sem depender de log nenhum.
+  // exit code aparece na linha de saída do serviço no `journalctl -u culto-bot`, então isso
+  // vira alerta sem depender de log nenhum.
   process.exit(resumo?.falhasDeGravacao > 0 ? 1 : 0);
 }
 
