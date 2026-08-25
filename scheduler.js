@@ -9,7 +9,7 @@ const diagnostico = require('./diagnostico');
 const INTERVALO_MIN = 1;
 
 // Folga sobre o número de tentativas antes de a janela desistir pelo relógio. Existe porque
-// "36 tentativas" só equivale a 36 minutos enquanto cada tentativa for rápida: com a rede
+// "37 tentativas" só equivale a 37 minutos enquanto cada tentativa for rápida: com a rede
 // ruim, cada uma pode levar bem mais que o intervalo. Sem este teto a janela invadiria a
 // noite, e janela aberta é socket aberto segurando a sessão da conta.
 const FOLGA_JANELA_MIN = 5;
@@ -122,26 +122,33 @@ function janelaMarcada(tipo, chave, momento = new Date()) {
 // Uma tabela só, usada pelo cron e pela recuperação de janela perdida da subida. Enquanto
 // isto era três chamadas de cron.schedule copiadas, o horário vivia em dois lugares (a
 // expressão e o texto do console) e não havia como perguntar "estou dentro de uma janela?".
+// Toda janela abre 7 min antes do culto e fecha 30 min depois dele (o fim é início +
+// maxTentativas, uma tentativa por minuto). Os 7 min são escolha do Luiz (25/08), no lugar
+// da mistura antiga de 1, 6 e 11: tecnicamente a antecedência é indiferente, então ficou o
+// número bíblico da completude. O avisoAposMin conta do INÍCIO do monitoramento, não do
+// culto — 10 min após a abertura = 3 min depois do culto; quem mudar a abertura precisa
+// mudar o aviso e as tentativas juntos. Em dia de estreia o vídeo costuma já estar publicado
+// quando a janela abre, então a abertura é, na prática, a hora em que o link sai no grupo.
 const JANELAS = [
   {
-    chave: 'domingo-manha', rotulo: 'Domingo 09h54', diaSemana: 0, hora: 9, minuto: 54,
-    maxTentativas: 36, filtroHoras: 8, avisoAposMin: 9, fallbackGravacao: false,
+    chave: 'domingo-manha', rotulo: 'Domingo 09h53', diaSemana: 0, hora: 9, minuto: 53,
+    maxTentativas: 37, filtroHoras: 8, avisoAposMin: 10, fallbackGravacao: false,
   },
   {
-    chave: 'domingo-noite', rotulo: 'Domingo 18h59', diaSemana: 0, hora: 18, minuto: 59,
-    maxTentativas: 31, filtroHoras: 7, avisoAposMin: 4, fallbackGravacao: true,
+    chave: 'domingo-noite', rotulo: 'Domingo 18h53', diaSemana: 0, hora: 18, minuto: 53,
+    maxTentativas: 37, filtroHoras: 7, avisoAposMin: 10, fallbackGravacao: true,
   },
   {
-    chave: 'quarta-noite', rotulo: 'Quarta 19h54', diaSemana: 3, hora: 19, minuto: 54,
-    maxTentativas: 36, filtroHoras: 7, avisoAposMin: 9, fallbackGravacao: false,
+    chave: 'quarta-noite', rotulo: 'Quarta 19h53', diaSemana: 3, hora: 19, minuto: 53,
+    maxTentativas: 37, filtroHoras: 7, avisoAposMin: 10, fallbackGravacao: false,
   },
   {
     // Culto das 19h ainda em fase de teste na igreja, por isso avisoAposMin: null — sábado
-    // sem transmissão é resultado esperado, não incidente para anunciar no grupo. A janela
-    // abre 11 min antes do culto (as demais abrem de 1 a 6 min antes) porque o horário de
-    // sábado ainda oscila; 41 tentativas fecham a janela às 19h30, como nas demais.
-    chave: 'sabado-noite', rotulo: 'Sábado 18h49', diaSemana: 6, hora: 18, minuto: 49,
-    maxTentativas: 41, filtroHoras: 7, avisoAposMin: null, fallbackGravacao: false,
+    // sem transmissão é resultado esperado, não incidente para anunciar no grupo. (Abria às
+    // 18h49, 11 min antes, enquanto o horário oscilava; o culto firmou às 19h e a janela
+    // entrou no padrão dos 7 min.)
+    chave: 'sabado-noite', rotulo: 'Sábado 18h53', diaSemana: 6, hora: 18, minuto: 53,
+    maxTentativas: 37, filtroHoras: 7, avisoAposMin: null, fallbackGravacao: false,
   },
 ];
 
@@ -447,7 +454,7 @@ async function desligar(motivo) {
  *
  * A recuperação existe porque o cron dispara em UM segundo do dia e não olha para trás: o
  * node-cron transforma o padrão de 5 campos em "segundo 0 do minuto agendado", então quem
- * sobe às 19h01 — ou às 18h59m08s — nunca vê o gatilho das 18h59, e o processo passa a noite
+ * sobe às 19h01 — ou às 18h53m08s — nunca vê o gatilho das 18h53, e o processo passa a noite
  * inteira de pé sem fazer nada: sem link, sem aviso, e com o socket do WhatsApp aberto
  * segurando a sessão da conta, que é o que emudece o celular do dono.
  *

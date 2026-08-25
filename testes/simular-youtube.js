@@ -62,13 +62,27 @@ function escolherEm(instanteISO, chaveDaJanela, entrada = candidatos, detalhes =
   }
 }
 
+// Congela o relógio também para GRAVAR a memória de janela. A poda do marcarJanela apaga
+// registro com mais de 7 dias contados do relógio REAL, e os cenários usam datas históricas
+// fixas: com o relógio solto, a marca recém-gravada já nascia "velha" e era podada na mesma
+// chamada — o teste passava até 7 dias depois da data ancorada e depois quebrava sozinho.
+function marcarEm(instanteISO, tipo, chave, extra = {}) {
+  const real = Date.now;
+  Date.now = () => new Date(instanteISO).getTime();
+  try {
+    marcarJanela(tipo, chave, extra, new Date(instanteISO));
+  } finally {
+    Date.now = real;
+  }
+}
+
 function main() {
   console.log('\n═══ Escolha do vídeo da janela ═══\n');
 
   // 1: o bug do domingo 16/08, na janela em que ele apareceu
   {
-    console.log('▶ domingo-noite às 18h59: estreia das 19h publicada de manhã (o caso de 16/08)');
-    const r = escolherEm('2026-08-16T21:59:00.000Z', 'domingo-noite');
+    console.log('▶ domingo-noite às 18h53: estreia das 19h publicada de manhã (o caso de 16/08)');
+    const r = escolherEm('2026-08-16T21:53:00.000Z', 'domingo-noite');
 
     checar('achou um vídeo', !!r, r ? `→ ${r.id}` : '→ nenhum');
     checar('escolheu a estreia da NOITE', r?.id === 'noite1', `→ ${r?.id}`);
@@ -78,8 +92,8 @@ function main() {
 
   // 2: a mesma playlist de manhã não pode mandar o link da noite
   {
-    console.log('▶ domingo-manha às 09h54: a estreia da noite já está agendada no canal');
-    const r = escolherEm('2026-08-16T12:54:00.000Z', 'domingo-manha');
+    console.log('▶ domingo-manha às 09h53: a estreia da noite já está agendada no canal');
+    const r = escolherEm('2026-08-16T12:53:00.000Z', 'domingo-manha');
 
     checar('escolheu a estreia da MANHÃ', r?.id === 'manha1', `→ ${r?.id}`);
     console.log('');
@@ -219,7 +233,7 @@ function main() {
 
   // 11: broadcast agendado e abandonado não é o culto
   {
-    console.log('▶ agendado para as 14h e nunca iniciado: rejeitado às 18h49');
+    console.log('▶ agendado para as 14h e nunca iniciado: rejeitado às 18h53');
     // O "upcoming" da API guarda para sempre broadcasts agendados que nunca foram ao ar.
     // Sem início real, a régua é a tolerância de atraso (60 min), não o piso de filtroHoras —
     // senão o agendamento morto da tarde caberia na janela da noite.
@@ -229,7 +243,7 @@ function main() {
       contentDetails: { duration: 'P0D' },
       liveStreamingDetails: { scheduledStartTime: '2026-08-22T17:00:00.000Z' }, // 14h00 BRT
     }]]);
-    const r = escolherEm('2026-08-22T21:49:00.000Z', 'sabado-noite', abandonado, detalhes);
+    const r = escolherEm('2026-08-22T21:53:00.000Z', 'sabado-noite', abandonado, detalhes);
 
     checar('não enviou nada', r === null, `→ ${r?.id || 'nenhum'}`);
     console.log('');
@@ -254,12 +268,12 @@ function main() {
 
   // 13: a configuração da janela nova
   {
-    console.log('▶ sábado 18h49 existe na tabela, sem aviso de atraso');
+    console.log('▶ sábado 18h53 existe na tabela, sem aviso de atraso');
     const sabado = janelaPor('sabado-noite');
 
     checar('janela registrada', !!sabado);
-    checar('começa sábado às 18h49', sabado?.diaSemana === 6 && sabado?.hora === 18 && sabado?.minuto === 49);
-    checar('41 tentativas (até 19h30)', sabado?.maxTentativas === 41, `→ ${sabado?.maxTentativas}`);
+    checar('começa sábado às 18h53', sabado?.diaSemana === 6 && sabado?.hora === 18 && sabado?.minuto === 53);
+    checar('37 tentativas (até 19h30)', sabado?.maxTentativas === 37, `→ ${sabado?.maxTentativas}`);
     checar('filtro de 7h, como as outras janelas da noite', sabado?.filtroHoras === 7, `→ ${sabado?.filtroHoras}`);
     checar('aviso de atraso desligado (culto em teste)', sabado?.avisoAposMin === null, `→ ${sabado?.avisoAposMin}`);
     checar('sem fallback de gravação', sabado?.fallbackGravacao === false);
@@ -270,19 +284,19 @@ function main() {
 
   // 14: a máquina sobe DEPOIS do minuto do cron
   {
-    console.log('▶ máquina sobe às 19h05 de domingo: o gatilho das 18h59 já passou');
+    console.log('▶ máquina sobe às 19h05 de domingo: o gatilho das 18h53 já passou');
     // 19h05 BRT = 22h05 UTC
     const r = janelaPerdida(new Date('2026-08-16T22:05:00.000Z'));
 
     checar('reconheceu a janela da noite', r?.janela.chave === 'domingo-noite', `→ ${r?.janela.chave}`);
-    checar('com o atraso certo', r?.atrasoMin === 6, `→ ${r?.atrasoMin} min`);
+    checar('com o atraso certo', r?.atrasoMin === 12, `→ ${r?.atrasoMin} min`);
     console.log('');
   }
 
   // 15: subida normal, alguns minutos ANTES — o cron ainda vai disparar
   {
-    console.log('▶ máquina sobe às 18h54 de domingo: o cron das 18h59 ainda vai disparar');
-    const r = janelaPerdida(new Date('2026-08-16T21:54:00.000Z'));
+    console.log('▶ máquina sobe às 18h50 de domingo: o cron das 18h53 ainda vai disparar');
+    const r = janelaPerdida(new Date('2026-08-16T21:50:00.000Z'));
 
     checar('não recupera nada (evita janela dupla)', r === null, `→ ${r?.janela.chave || 'nenhuma'}`);
     console.log('');
@@ -290,13 +304,13 @@ function main() {
 
   // 16: dentro do próprio minuto do gatilho, o segundo 0 já passou — a zona morta
   {
-    console.log('▶ máquina sobe às 18h59m30s de domingo, dentro do minuto do gatilho');
+    console.log('▶ máquina sobe às 18h53m30s de domingo, dentro do minuto do gatilho');
     // O node-cron só dispara no segundo 0 do minuto agendado; um boot no segundo 30 nunca
     // vê o gatilho de hoje. O piso antigo de 1 minuto ("deixa o cron trabalhar") transformava
     // esses ~59s numa zona morta que matava a janela inteira em silêncio — bastava o teto de
-    // vida derrubar o processo às 18h58m5x. A corrida rara do boot no próprio segundo 0 é
+    // vida derrubar o processo às 18h52m5x. A corrida rara do boot no próprio segundo 0 é
     // absorvida pelo guarda síncrono de tentativasAtivas: a segunda entrada recebe null.
-    const r = janelaPerdida(new Date('2026-08-16T21:59:30.000Z'));
+    const r = janelaPerdida(new Date('2026-08-16T21:53:30.000Z'));
 
     checar('recupera a janela na zona morta do minuto do gatilho', r?.janela.chave === 'domingo-noite', `→ ${r?.janela.chave || 'nenhuma'}`);
     checar('com atraso zero', r?.atrasoMin === 0, `→ ${r?.atrasoMin} min`);
@@ -323,12 +337,12 @@ function main() {
 
   // 19: a janela nova de sábado também é recuperada
   {
-    console.log('▶ máquina sobe às 19h00 de sábado: o gatilho das 18h49 já passou');
+    console.log('▶ máquina sobe às 19h00 de sábado: o gatilho das 18h53 já passou');
     // 19h00 BRT = 22h00 UTC; 22/08/2026 é sábado
     const r = janelaPerdida(new Date('2026-08-22T22:00:00.000Z'));
 
     checar('reconheceu a janela de sábado', r?.janela.chave === 'sabado-noite', `→ ${r?.janela.chave || 'nenhuma'}`);
-    checar('com o atraso certo', r?.atrasoMin === 11, `→ ${r?.atrasoMin} min`);
+    checar('com o atraso certo', r?.atrasoMin === 7, `→ ${r?.atrasoMin} min`);
     console.log('');
   }
 
@@ -338,7 +352,7 @@ function main() {
     // O triplo envio de 23/08 por inteiro: envia → desligar() → exit → systemd religa → a
     // recuperação reentrava aqui com a live ainda no ar e enviava de novo. O registro em
     // disco é o que corta o ciclo — o cenário 14 acima é o mesmo instante SEM o registro.
-    marcarJanela('link', 'domingo-noite', { url: 'https://y/x' }, new Date('2026-08-16T22:05:00.000Z'));
+    marcarEm('2026-08-16T22:05:00.000Z', 'link', 'domingo-noite', { url: 'https://y/x' });
     const r = janelaPerdida(new Date('2026-08-16T22:05:00.000Z'));
 
     checar('não recupera a janela já enviada', r?.janela?.chave !== 'domingo-noite', `→ ${r?.janela?.chave || 'nenhuma'}`);
@@ -350,8 +364,8 @@ function main() {
     console.log('▶ janela do dia já encerrada sem link: a recuperação não a reabre');
     // Sem isto, um restart abrupto logo após o fallback de gravação reabria a janela (o
     // 'link' nunca foi marcado numa janela sem live) e a gravação saía uma segunda vez.
-    marcarJanela('encerrada', 'quarta-noite', {}, new Date('2026-08-19T23:10:00.000Z'));
-    const r = janelaPerdida(new Date('2026-08-19T23:10:00.000Z')); // quarta 20h10 BRT, atraso 16
+    marcarEm('2026-08-19T23:10:00.000Z', 'encerrada', 'quarta-noite');
+    const r = janelaPerdida(new Date('2026-08-19T23:10:00.000Z')); // quarta 20h10 BRT, atraso 17
 
     checar('não recupera a janela encerrada', r === null, `→ ${r?.janela?.chave || 'nenhuma'}`);
     console.log('');
