@@ -19,10 +19,16 @@ transmissão sem data não passam — nenhum dos dois tem horário de transmiss�
 
 | Dia | Início | Culto | Janela | Aviso de atraso | Comportamento |
 |-----|--------|-------|--------|-----------------|---------------|
-| Domingo manhã | 9h54 | 10h00 | até 10h30 | 10h03 | Envia link ao vivo |
-| Domingo noite | 18h59 | 19h00 | até 19h30 | 19h03 | Envia link ao vivo; se não encontrar, envia a gravação mais recente (últimas 6h) |
-| Quarta-feira | 19h54 | 20h00 | até 20h30 | 20h03 | Envia link ao vivo |
-| Sábado | 18h49 | 19h00 | até 19h30 | — | Envia link ao vivo. Culto em teste na igreja: **sem** aviso de atraso |
+| Domingo manhã | 9h53 | 10h00 | até 10h30 | 10h03 | Envia link ao vivo |
+| Domingo noite | 18h53 | 19h00 | até 19h30 | 19h03 | Envia link ao vivo; se não encontrar, envia a gravação mais recente (últimas 6h) |
+| Quarta-feira | 19h53 | 20h00 | até 20h30 | 20h03 | Envia link ao vivo |
+| Sábado | 18h53 | 19h00 | até 19h30 | — | Envia link ao vivo. Culto em teste na igreja: **sem** aviso de atraso |
+
+Toda janela abre **7 minutos antes** do culto e fecha 30 minutos depois dele. Os 7 min foram
+padronizados em 25/08 (antes era uma mistura de 1, 6 e 11): tecnicamente a antecedência é
+indiferente, então ficou o número bíblico da completude. Em dia de estreia o vídeo costuma já
+estar publicado quando a janela abre, então a abertura é, na prática, a hora em que o link sai
+no grupo — ele chega ~7 min antes do culto, apontando para a contagem regressiva.
 
 **Aviso de atraso:** se o link ainda não foi encontrado 3 minutos após o horário do culto, o bot
 envia uma mensagem ao grupo avisando que a transmissão atrasou. É enviado no máximo uma vez por
@@ -103,7 +109,7 @@ não dispara mais (o node-cron só dispara no segundo 0). O bot detecta isso na 
 **recupera a janela**, com as tentativas descontadas do atraso e o aviso de atraso adiantado,
 desde que o link do dia não esteja registrado em disco e a janela não tenha sido esgotada
 hoje. A recuperação vale **desde o atraso zero**: um boot dentro do próprio minuto do gatilho
-(9h54m08s, digamos) também já perdeu o cron do dia, e o piso antigo de 1 minuto transformava
+(9h53m08s, digamos) também já perdeu o cron do dia, e o piso antigo de 1 minuto transformava
 esses ~59 segundos numa zona morta que matava a janela inteira em silêncio. O cron ainda roda
 com `recoverMissedExecutions`, para um tick que pule o segundo 0 (pausa de GC, CPU da
 e2-micro estrangulada) não perder o gatilho com o processo vivo.
@@ -350,8 +356,9 @@ Desde 22/08 as buscas caras (os dois `search.list`) rodam só **a cada 3 tentati
 (tentativas 1, 4, 7...); a playlist + `videos.list` (2-3 unidades) rodam em todas. Antes da
 cadência, o pior domingo — nenhuma transmissão encontrada em nenhuma janela — custava
 67 tentativas × ~203 ≈ **13,7 mil unidades**, acima do teto, com a quota morrendo no meio da
-janela da noite e levando junto o fallback de gravação. Com a cadência, o mesmo pior caso fica
-em **~5 mil unidades**, e o sábado vazio (resultado esperado do culto em teste) em ~3 mil. O
+janela da noite e levando junto o fallback de gravação. Com a cadência, o pior domingo de hoje
+(duas janelas de 37 tentativas) fica em **~5,5 mil unidades**, e o sábado vazio (resultado
+esperado do culto em teste) em ~2,7 mil. O
 preço é um atraso de até 2 min para uma live que só o search enxerga — e a experiência aqui
 registrada é a oposta: o search é que atrasa, a playlist vê primeiro.
 
@@ -619,11 +626,11 @@ npm test
 São cinco suítes, todas rodando o código real com as dependências externas trocadas por
 dublês. Nenhuma delas toca no YouTube ou no WhatsApp de verdade.
 
-**`testes/simular-aviso.js`** exercita `monitorarAoVivo` com relógio simulado (sem esperar 36
+**`testes/simular-aviso.js`** exercita `monitorarAoVivo` com relógio simulado (sem esperar 37
 minutos). Cobre: aviso no minuto certo nas janelas que o têm, aviso suprimido quando o link
 chega antes do prazo, aviso seguido do link quando ele chega depois, reenvio sem duplicação
 quando o primeiro envio falha, a janela **sem** aviso (sábado, `avisoAposMin: null`)
-segurando a mensagem pelas 41 tentativas completas, e a memória de janela em disco: a mesma
+segurando a mensagem pelas 37 tentativas completas, e a memória de janela em disco: a mesma
 janela executada de novo (o restart do systemd de 23/08) **não** reenvia o link nem repete o
 aviso de atraso; a janela **esgotada** sem link nem chega a reabrir; o envio que estoura o
 prazo e completa depois é **absorvido** na tentativa seguinte (link e aviso) em vez de

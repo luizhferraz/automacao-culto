@@ -2,7 +2,7 @@
  * Simulação do aviso de atraso, com relógio falso.
  *
  * Roda a função monitorarAoVivo real (não uma cópia), substituindo apenas:
- *   • Date.now e setTimeout  → relógio simulado, para não esperar 36 minutos
+ *   • Date.now e setTimeout  → relógio simulado, para não esperar 37 minutos
  *   • ./youtube e ./whatsapp → stubs que registram o que seria enviado
  *
  * Uso: node testes/simular-aviso.js
@@ -78,9 +78,9 @@ const ehLink = (e) => !ehAviso(e);
 
 // ── Cenários ─────────────────────────────────────────────────────────────────
 const JANELAS = {
-  'domingo-manha': { maxTentativas: 36, filtroHoras: 8, avisoAposMin: 9, inicio: '09h54', avisoEsperado: '10h03' },
-  'domingo-noite': { maxTentativas: 31, filtroHoras: 7, avisoAposMin: 4, inicio: '18h59', avisoEsperado: '19h03' },
-  'quarta-noite':  { maxTentativas: 36, filtroHoras: 7, avisoAposMin: 9, inicio: '19h54', avisoEsperado: '20h03' },
+  'domingo-manha': { maxTentativas: 37, filtroHoras: 8, avisoAposMin: 10, inicio: '09h53', avisoEsperado: '10h03' },
+  'domingo-noite': { maxTentativas: 37, filtroHoras: 7, avisoAposMin: 10, inicio: '18h53', avisoEsperado: '19h03' },
+  'quarta-noite':  { maxTentativas: 37, filtroHoras: 7, avisoAposMin: 10, inicio: '19h53', avisoEsperado: '20h03' },
 };
 
 const VIDEO_FALSO = { id: 'x', titulo: 'Culto da Família', url: 'https://y/x', fonte: 'live' };
@@ -191,8 +191,8 @@ async function main() {
     console.log('▶ sabado-noite: transmissão nunca aparece e avisoAposMin é null (culto em teste)');
     // O culto de sábado ainda é experimento da igreja: janela vazia é resultado esperado,
     // não incidente. avisoAposMin: null precisa segurar o aviso a janela INTEIRA — o teste
-    // roda as 41 tentativas para provar que nenhum minuto dispara a mensagem.
-    const janela = { maxTentativas: 41, filtroHoras: 7, avisoAposMin: null };
+    // roda as 37 tentativas para provar que nenhum minuto dispara a mensagem.
+    const janela = { maxTentativas: 37, filtroHoras: 7, avisoAposMin: null };
     const r = await cenario('sem-aviso', janela, 'sabado-sem-aviso', () => null);
 
     checar('nenhum aviso enviado na janela inteira', r.avisos.length === 0, `(enviados: ${r.avisos.length})`);
