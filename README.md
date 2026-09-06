@@ -110,14 +110,10 @@ terminar, o envio espera a **mesma** abertura em vez de abrir um segundo socket.
 > envio extra de 23/08 que o journal da VM não mostrava. Em 06/09 o Luiz confirmou que a
 > máquina do Fly e os jobs do cron-job.org foram desligados; desde então o único agendador é
 > o cron interno deste bot (`scheduler.js`), e os três workflows do GitHub da era Fly já
-> tinham saído do repositório. Dois restos que só existem fora do repositório e que vale
-> conferir uma vez, se ainda não foram feitos:
->
-> - **WhatsApp** (celular do dono): Aparelhos conectados → o aparelho da era Fly pode ainda
->   aparecer na lista, porque o registro na conta sobrevive à destruição da máquina. Se
->   aparecer, desvincular — com cuidado para **não** desvincular o aparelho da VM.
-> - **GitHub e Fly**: o secret `FLY_API_TOKEN` do repositório e o token correspondente no
->   Fly (`fly tokens revoke`). Nada mais usa; token vivo é credencial solta.
+> tinham saído do repositório. Os dois restos que viviam fora do repositório também foram
+> fechados: o aparelho da era Fly foi desvinculado da conta do WhatsApp (o registro na conta
+> sobrevive à destruição da máquina) e o token `FLY_API_TOKEN` foi apagado do repositório e
+> revogado no Fly. Só a VM envia link, com um único aparelho vinculado.
 
 > **⚠️ Na VM de hoje, o estado do bot mora em `/opt/automacao-culto`, não em `/var/lib/culto`.**
 > Conferido em 06/09/2026: o `/etc/culto/culto.env` tem só `YOUTUBE_API_KEY`,
