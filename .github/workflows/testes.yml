@@ -14,10 +14,6 @@ jobs:
   testes:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      # O puppeteer está no package.json mas nenhum arquivo o usa (sobra da era anterior ao
-      # Baileys). Sem isto o npm ci baixa ~150 MB de Chrome a cada execução, para nada.
-      PUPPETEER_SKIP_DOWNLOAD: 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

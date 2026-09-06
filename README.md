@@ -483,11 +483,11 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-ge
 sudo timedatectl set-timezone America/Sao_Paulo
 sudo useradd --system --create-home --home /var/lib/culto --shell /usr/sbin/nologin culto
 
-# Código e dependências (sem o Chromium do puppeteer, que não é usado)
+# Código e dependências
 sudo git clone https://github.com/luizhferraz/automacao-culto.git /opt/automacao-culto
 sudo chown -R culto:culto /opt/automacao-culto
 cd /opt/automacao-culto
-sudo -u culto env PUPPETEER_SKIP_DOWNLOAD=1 PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 npm install --omit=dev
+sudo -u culto npm install --omit=dev
 
 # Dados e configuração
 sudo mkdir -p /var/lib/culto/baileys_auth && sudo chown -R culto:culto /var/lib/culto
