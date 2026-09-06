@@ -23,12 +23,25 @@ transmissão sem data não passam — nenhum dos dois tem horário de transmiss�
 | Domingo noite | 18h53 | 19h00 | até 19h30 | 19h03 | Envia link ao vivo; se não encontrar, envia a gravação mais recente (últimas 6h) |
 | Quarta-feira | 19h53 | 20h00 | até 20h30 | 20h03 | Envia link ao vivo |
 | Sábado | 18h53 | 19h00 | até 19h30 | — | Envia link ao vivo. Culto em teste na igreja: **sem** aviso de atraso |
+| Segunda a sexta, **só de 14 a 18/09/2026** | 6h25 | 6h30 | até 7h00 | — | Envia link ao vivo. Semana especial com vigência: fora dessas datas a janela não existe |
 
-Toda janela abre **7 minutos antes** do culto e fecha 30 minutos depois dele. Os 7 min foram
-padronizados em 25/08 (antes era uma mistura de 1, 6 e 11): tecnicamente a antecedência é
-indiferente, então ficou o número bíblico da completude. Em dia de estreia o vídeo costuma já
+As janelas fixas abrem **7 minutos antes** do culto e fecham 30 minutos depois dele. Os 7 min
+foram padronizados em 25/08 (antes era uma mistura de 1, 6 e 11): tecnicamente a antecedência
+é indiferente, então ficou o número bíblico da completude. Em dia de estreia o vídeo costuma já
 estar publicado quando a janela abre, então a abertura é, na prática, a hora em que o link sai
 no grupo — ele chega ~7 min antes do culto, apontando para a contagem regressiva.
+
+**Janela com vigência:** uma entrada de `JANELAS` pode declarar `vigencia: { de, ate }` (datas
+em `YYYY-MM-DD`, no fuso da igreja, as duas inclusas) e `diaSemana` como lista. Fora da
+vigência a janela fica na tabela mas não faz nada: o cron interno dispara e sai calado, e a
+recuperação de janela perdida não a reabre. É assim que a semana de 14 a 18/09 entrou sem
+depender de alguém lembrar de remover a entrada na sexta — a alternativa, entradas
+temporárias, era o bot procurando culto às 6h25 todo dia útil até alguém notar. Data escrita
+errada (`2026-9-14` sem o zero, `2026-02-30`, `de` depois de `ate`) derruba a carga do módulo:
+o `npm test` acusa antes do deploy, e na VM o serviço nem sobe, em vez de uma janela que
+simplesmente não abre. Depois do dia 18 a entrada pode ser removida a qualquer momento, como
+limpeza. Importante: o cron só lê a tabela na subida do processo, então a entrada precisa
+estar em produção (`git pull` + `systemctl restart culto-bot`) **antes** da primeira janela.
 
 **Aviso de atraso:** se o link ainda não foi encontrado 3 minutos após o horário do culto, o bot
 envia uma mensagem ao grupo avisando que a transmissão atrasou. É enviado no máximo uma vez por
@@ -651,7 +664,13 @@ recuperação de janela perdida: processo subindo atrasado é recuperado (inclus
 inclusive **dentro do minuto do gatilho** — a zona morta em que o segundo 0 do cron já passou),
 subindo **antes** do horário **não** é, para não rodar a janela duas vezes, e nem a janela
 cujo link de hoje já está registrado em disco (o triplo envio de 23/08) nem a que já se
-esgotou sem link são reabertas pela recuperação.
+esgotou sem link são reabertas pela recuperação. Cobre ainda a janela **com vigência** (a
+semana de 14 a 18/09): a configuração, a expressão de cron de cada janela validada pelo
+próprio `node-cron`, a recuperação reconhecendo a janela no primeiro e no último dia da
+vigência e ignorando a mesma hora na semana anterior e na seguinte, a quarta 16/09 com duas
+janelas no mesmo dia, a vigência contada no dia da **igreja** e não no dia UTC, e a tabela
+escrita errada (data sem zero, dia inexistente, `de` depois de `ate`, dia da semana fora de
+0..6) sendo rejeitada na carga do módulo.
 
 **`testes/simular-busca.js`** exercita a fiação completa de `buscarTransmissaoAoVivo` e
 `buscarUltimaGravacao` com o axios trocado por dublê: o Método 1 validando o resultado do
