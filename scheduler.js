@@ -134,8 +134,8 @@ function janelaMarcada(tipo, chave, momento = new Date()) {
 //   • diaSemana aceita um número ou uma lista ([1, 2, 3, 4, 5] = segunda a sexta). A memória
 //     em disco já separa por dia (tipo:chave@dia), então uma chave só serve para vários dias.
 //   • vigencia (opcional): { de, ate } em YYYY-MM-DD, dias no fuso da igreja, os dois
-//     inclusos. Fora desse intervalo a janela está na tabela mas não faz nada: o cron dispara
-//     e sai calado, e a recuperação da subida não a reabre. É o que permite uma semana
+//     inclusos. Fora desse intervalo a janela está na tabela mas não faz nada: o cron dispara,
+//     deixa uma linha no journal e sai, e a recuperação da subida não a reabre. É o que permite uma semana
 //     especial sem depender de alguém lembrar de remover a entrada depois — a alternativa
 //     (entradas temporárias) era o bot procurando culto de madrugada todo dia útil até alguém
 //     notar, e este projeto já pagou caro por um agendador esquecido (o cron-job.org da era
@@ -170,7 +170,9 @@ const JANELAS = [
     // motivo do sábado: transmissão nova em horário incomum, manhã sem live não é incidente
     // para anunciar no grupo. Na quarta 16/09 este dia tem duas janelas (6h25 e 19h53), com
     // chaves diferentes — a memória em disco não se confunde. Depois do dia 18 a vigência cala
-    // a janela sozinha; remover a entrada é limpeza, não obrigação.
+    // a janela sozinha (sobra uma linha no journal a cada dia útil às 6h25); remover a entrada
+    // é limpeza, não obrigação — os testes do mecanismo de vigência usam uma janela própria e
+    // não dependem desta entrada, só o cenário que confere ESTA configuração sai junto com ela.
     chave: 'semana-manha', rotulo: 'Seg a sex 06h25 (14 a 18/09)', diaSemana: [1, 2, 3, 4, 5],
     hora: 6, minuto: 25, maxTentativas: 35, filtroHoras: 7, avisoAposMin: null, fallbackGravacao: false,
     vigencia: { de: '2026-09-14', ate: '2026-09-18' },
@@ -199,16 +201,45 @@ function diaValido(s) {
 // systemctl status denuncia na hora, em vez de uma janela que simplesmente não abre.
 function validarJanela(janela) {
   const { chave, vigencia } = janela;
+  if (typeof chave !== 'string' || chave === '') {
+    throw new Error(`Janela sem chave: ${JSON.stringify(janela)} — a chave identifica a janela na memória em disco e no log`);
+  }
   const dias = diasDaSemana(janela);
   if (dias.length === 0 || dias.some(d => !Number.isInteger(d) || d < 0 || d > 6)) {
     throw new Error(`Janela ${chave}: diaSemana inválido ${JSON.stringify(janela.diaSemana)} — esperado um número de 0 (domingo) a 6 (sábado), ou uma lista deles`);
   }
   if (vigencia === undefined) return;
-  if (!vigencia || !diaValido(vigencia.de) || !diaValido(vigencia.ate) || vigencia.de > vigencia.ate) {
-    throw new Error(`Janela ${chave}: vigencia inválida ${JSON.stringify(vigencia)} — esperado { de: 'YYYY-MM-DD', ate: 'YYYY-MM-DD' } com de <= ate`);
+  // Uma mensagem por causa: '2026-02-30' tem exatamente a forma pedida, e um erro que só
+  // repetisse "esperado YYYY-MM-DD" não diria a quem lê o journal por que foi rejeitado.
+  if (!vigencia || typeof vigencia !== 'object') {
+    throw new Error(`Janela ${chave}: vigencia inválida ${JSON.stringify(vigencia)} — esperado { de: 'YYYY-MM-DD', ate: 'YYYY-MM-DD' }`);
+  }
+  for (const campo of ['de', 'ate']) {
+    if (!diaValido(vigencia[campo])) {
+      throw new Error(`Janela ${chave}: vigencia.${campo} = ${JSON.stringify(vigencia[campo])} não é um dia que existe no calendário — esperado YYYY-MM-DD, com zero à esquerda no mês e no dia`);
+    }
+  }
+  if (vigencia.de > vigencia.ate) {
+    throw new Error(`Janela ${chave}: vigencia começa depois de terminar (de ${vigencia.de} > ate ${vigencia.ate})`);
   }
 }
-JANELAS.forEach(validarJanela);
+
+// A tabela inteira: cada janela válida, e nenhuma chave repetida. A chave é o que separa as
+// janelas na memória em disco (tipo:chave@dia) e no tentativasAtivas; duas entradas com a
+// mesma chave no mesmo dia fariam a segunda ler "já enviei o link hoje" da primeira e sair
+// sem procurar transmissão — o culto ficaria mudo, sem erro em lugar nenhum. É o erro mais
+// fácil de cometer ao copiar uma entrada para criar a próxima janela especial.
+function validarTabela(janelas) {
+  const chaves = new Set();
+  for (const janela of janelas) {
+    validarJanela(janela);
+    if (chaves.has(janela.chave)) {
+      throw new Error(`Janela ${janela.chave}: chave repetida na tabela — a memória em disco e o tentativasAtivas separam janelas por chave`);
+    }
+    chaves.add(janela.chave);
+  }
+}
+validarTabela(JANELAS);
 
 // Janela sem vigência vale sempre. Com vigência, vale nos dias de..ate no fuso da igreja:
 // comparar texto em YYYY-MM-DD ordena como data, e o dia é o mesmo que a memória em disco
@@ -527,13 +558,25 @@ async function desligar(motivo) {
  * `tentativasAtivas` no monitorarAoVivo (incrementado antes de qualquer await) faz a segunda
  * entrada receber null e sair sem tocar em nada. O janelaMarcada em disco é a terceira defesa.
  */
-function iniciarAgendamentos(config) {
-  for (const janela of JANELAS) {
+// `janelas` só é parametrizável para o teste do gatilho do cron (testes/simular-agendamento.js)
+// registrar uma janela própria, sem depender da entrada temporária da tabela.
+function iniciarAgendamentos(config, janelas = JANELAS) {
+  for (const janela of janelas) {
+    // Com recoverMissedExecutions o node-cron 3.0.3 PODE chamar o mesmo segundo duas vezes:
+    // ele trunca o lastExecution para milissegundo 0 e o tick seguinte reavalia "agora - 1s",
+    // que ainda cai dentro do segundo casado. Reproduzido em teste (2 disparos com a opção,
+    // 1 sem). Os guardas do monitorarAoVivo já seguravam a segunda chamada; a deduplicação
+    // pelo segundo casado, que o node-cron passa como argumento, fecha o buraco na origem e
+    // poupa o journal de uma linha repetida a cada gatilho.
+    let ultimoSegundo = null;
     cron.schedule(
       expressaoCron(janela),
-      () => {
+      (agora) => {
+        const segundo = Math.floor(new Date(agora).getTime() / 1000);
+        if (segundo === ultimoSegundo) return;
+        ultimoSegundo = segundo;
         // A expressão do cron só conhece dia da semana; a vigência é decidida aqui, no fuso
-        // da igreja, no instante do disparo. Fora dela o gatilho é silêncio de propósito.
+        // da igreja, no instante do disparo. Fora dela o gatilho registra uma linha e sai.
         if (!janelaVigente(janela)) {
           console.log(`[Scheduler] Gatilho de ${janela.chave} fora da vigência (${janela.vigencia.de} a ${janela.vigencia.ate}); nada a fazer.`);
           return;
@@ -544,14 +587,13 @@ function iniciarAgendamentos(config) {
       // pule o segundo 0 (pausa de GC, CPU da e2-micro estrangulada, drift do setTimeout)
       // perdia o gatilho com o processo VIVO, e nada mais chamava a janela — a recuperação
       // da subida só roda no boot. Com a opção ligada, o tick seguinte reconstrói o segundo
-      // pulado. Disparo em dobro não acontece: o lastExecution do node-cron impede o mesmo
-      // segundo duas vezes, e os guardas do monitorarAoVivo seguram o resto.
+      // pulado. O disparo em dobro que a opção causa é tratado acima.
       { timezone: FUSO, recoverMissedExecutions: true }
     );
   }
 
   console.log(`📅 Agendamentos configurados (${FUSO}):`);
-  for (const j of JANELAS) {
+  for (const j of janelas) {
     const fim = inicioEmMinutos(j) + j.maxTentativas;
     const hhmm = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}h${String(min % 60).padStart(2, '0')}`;
     const aviso = j.avisoAposMin === null ? 'sem aviso de atraso' : `aviso de atraso após ${j.avisoAposMin} min`;
@@ -562,7 +604,7 @@ function iniciarAgendamentos(config) {
   }
   console.log('   Qualquer transmissão ao vivo ou estreia do canal conta como culto (sem filtro de título).');
 
-  const perdida = janelaPerdida();
+  const perdida = janelaPerdida(new Date(), janelas);
   if (perdida) {
     console.warn(`[Scheduler] ⏱  A máquina subiu ${perdida.atrasoMin} min depois do início de ${perdida.janela.chave}; o cron de hoje já passou. Recuperando a janela agora.`);
     diagnostico.anotar(`janela ${perdida.janela.chave}: recuperada na subida, ${perdida.atrasoMin} min de atraso`);
@@ -582,10 +624,10 @@ function iniciarAgendamentos(config) {
  * próprio segundo 0 e o cron também disparar, os dois vivem no mesmo processo e o guarda
  * síncrono de tentativasAtivas faz o segundo receber null.
  */
-function janelaPerdida(momento = new Date()) {
+function janelaPerdida(momento = new Date(), janelas = JANELAS) {
   const { diaSemana, minutosDoDia } = agoraNaIgreja(momento);
 
-  for (const janela of JANELAS) {
+  for (const janela of janelas) {
     if (!diasDaSemana(janela).includes(diaSemana)) continue;
     // Fora da vigência a janela não existe hoje — nem para o cron, nem para a recuperação.
     if (!janelaVigente(janela, momento)) continue;
@@ -607,9 +649,9 @@ function janelaPerdida(momento = new Date()) {
 // (ver testes/simular-aviso.js), que rodam a função real com relógio simulado. JANELAS e
 // agoraNaIgreja saem junto para o teste da recuperação de janela perdida; marcarJanela e
 // janelaMarcada, para os testes da memória de janela em disco; enviarGravacao, para o teste
-// de que a gravação do fallback não sai duas vezes; janelaVigente, validarJanela e
-// expressaoCron, para os testes da janela com vigência.
+// de que a gravação do fallback não sai duas vezes; janelaVigente, validarJanela,
+// validarTabela e expressaoCron, para os testes da janela com vigência.
 module.exports = {
   iniciarAgendamentos, monitorarAoVivo, mensagemAtraso, JANELAS, janelaPerdida, marcarJanela,
-  janelaMarcada, enviarGravacao, janelaVigente, validarJanela, expressaoCron,
+  janelaMarcada, enviarGravacao, janelaVigente, validarJanela, validarTabela, expressaoCron,
 };

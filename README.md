@@ -33,15 +33,23 @@ no grupo — ele chega ~7 min antes do culto, apontando para a contagem regressi
 
 **Janela com vigência:** uma entrada de `JANELAS` pode declarar `vigencia: { de, ate }` (datas
 em `YYYY-MM-DD`, no fuso da igreja, as duas inclusas) e `diaSemana` como lista. Fora da
-vigência a janela fica na tabela mas não faz nada: o cron interno dispara e sai calado, e a
-recuperação de janela perdida não a reabre. É assim que a semana de 14 a 18/09 entrou sem
-depender de alguém lembrar de remover a entrada na sexta — a alternativa, entradas
-temporárias, era o bot procurando culto às 6h25 todo dia útil até alguém notar. Data escrita
-errada (`2026-9-14` sem o zero, `2026-02-30`, `de` depois de `ate`) derruba a carga do módulo:
-o `npm test` acusa antes do deploy, e na VM o serviço nem sobe, em vez de uma janela que
-simplesmente não abre. Depois do dia 18 a entrada pode ser removida a qualquer momento, como
-limpeza. Importante: o cron só lê a tabela na subida do processo, então a entrada precisa
-estar em produção (`git pull` + `systemctl restart culto-bot`) **antes** da primeira janela.
+vigência a janela fica na tabela mas não faz nada: o cron interno dispara, deixa uma linha no
+journal ("Gatilho de semana-manha fora da vigência ... nada a fazer") e sai, e a recuperação
+de janela perdida não a reabre. É assim que a semana de 14 a 18/09 entrou sem depender de
+alguém lembrar de remover a entrada na sexta — a alternativa, entradas temporárias, era o bot
+procurando culto às 6h25 todo dia útil até alguém notar. Data escrita errada (`2026-9-14` sem o
+zero, `2026-02-30`, `de` depois de `ate`) e chave repetida entre duas janelas derrubam a carga
+do módulo, cada uma com a própria mensagem: o `npm test` acusa antes do deploy, e na VM o
+serviço nem sobe, em vez de uma janela que simplesmente não abre. Depois do dia 18 a entrada
+pode ser removida a qualquer momento, como limpeza: os testes do mecanismo usam uma janela
+própria e continuam passando sem ela (só o cenário que confere aquela configuração se anuncia
+como pulado).
+
+Para operar: o cron só lê a tabela na subida do processo, então a entrada precisa estar em
+produção (`git pull` + `systemctl restart culto-bot`, fora de horário de culto) **antes** da
+primeira janela. A conferência é o log de subida (`journalctl -u culto-bot -n 20`): a janela
+tem que aparecer na lista, com a vigência — e, antes do primeiro dia, com o sufixo "fora da
+vigência hoje". Se a linha não aparecer, o código novo não chegou à VM.
 
 **Aviso de atraso:** se o link ainda não foi encontrado 3 minutos após o horário do culto, o bot
 envia uma mensagem ao grupo avisando que a transmissão atrasou. É enviado no máximo uma vez por
@@ -664,13 +672,28 @@ recuperação de janela perdida: processo subindo atrasado é recuperado (inclus
 inclusive **dentro do minuto do gatilho** — a zona morta em que o segundo 0 do cron já passou),
 subindo **antes** do horário **não** é, para não rodar a janela duas vezes, e nem a janela
 cujo link de hoje já está registrado em disco (o triplo envio de 23/08) nem a que já se
-esgotou sem link são reabertas pela recuperação. Cobre ainda a janela **com vigência** (a
-semana de 14 a 18/09): a configuração, a expressão de cron de cada janela validada pelo
-próprio `node-cron`, a recuperação reconhecendo a janela no primeiro e no último dia da
-vigência e ignorando a mesma hora na semana anterior e na seguinte, a quarta 16/09 com duas
-janelas no mesmo dia, a vigência contada no dia da **igreja** e não no dia UTC, e a tabela
-escrita errada (data sem zero, dia inexistente, `de` depois de `ate`, dia da semana fora de
-0..6) sendo rejeitada na carga do módulo.
+esgotou sem link são reabertas pela recuperação. Cobre ainda a janela **com vigência**, com
+uma janela própria do teste (a entrada real de 14 a 18/09 só é conferida enquanto existir):
+a expressão de cron de cada janela validada pelo próprio `node-cron`, a recuperação
+reconhecendo a janela no primeiro e no último dia da vigência e ignorando a mesma hora na
+semana anterior e na seguinte, a quarta 16/09 com duas janelas no mesmo dia, a mesma chave em
+dias seguidos (o link de segunda **não** cala a terça, porque a memória em disco separa por
+dia), a vigência contada no dia da **igreja** e não no dia UTC, e a tabela escrita errada
+(data sem zero, dia inexistente, `de` depois de `ate`, dia da semana fora de 0..6, chave
+vazia ou **repetida**) sendo rejeitada na carga do módulo, cada erro com a própria mensagem.
+
+**`testes/simular-agendamento.js`** roda o `iniciarAgendamentos` real com o `node-cron`
+trocado por um dublê que só guarda o callback de cada janela, e o relógio congelado no `Date`
+inteiro. É o teste do **gatilho do cron**, que é quem decide, todo dia útil com o bot já de pé,
+se a janela com vigência abre ou não — a recuperação de janela perdida só entra quando o
+processo sobe dentro da janela. Cobre: a subida registrando uma tarefa por janela com fuso e
+`recoverMissedExecutions`; o gatilho antes da vigência não abrindo nada (só uma linha no
+journal); o gatilho no primeiro e no último dia rodando a janela de ponta a ponta (busca,
+envio, registro em disco, desligamento); o gatilho depois da vigência calado; o mesmo segundo
+entregue **duas vezes** pelo `node-cron` 3.0.3 com `recoverMissedExecutions` (ele trunca o
+`lastExecution` e reavalia o segundo casado no tick seguinte) contando uma vez só; e a janela
+fixa sem vigência disparando sempre. Sem este teste, apagar a checagem de vigência do callback
+passava a suíte inteira.
 
 **`testes/simular-busca.js`** exercita a fiação completa de `buscarTransmissaoAoVivo` e
 `buscarUltimaGravacao` com o axios trocado por dublê: o Método 1 validando o resultado do
@@ -717,7 +740,7 @@ culto-automation/
 ├── whatsapp.js             # Conexão e envio via Baileys (sessão única por janela)
 ├── mensagens-enviadas.js   # Histórico em disco, usado para atender pedidos de reenvio
 ├── diagnostico.js          # Log filtrado e resumo por janela gravados em disco
-├── testes/                 # Aviso de atraso, escolha do vídeo, fiação da busca, reenvio e diagnóstico
+├── testes/                 # Aviso de atraso, escolha do vídeo, gatilho do cron, fiação da busca, reenvio e diagnóstico
 ├── fly.toml                # Era Fly.io — aposentado na migração de 22/08, mantido como histórico
 └── Dockerfile              # Imagem Docker (Node 20 Alpine) — não usada na VM, que roda node direto
 ```
