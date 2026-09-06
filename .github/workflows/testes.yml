@@ -1,0 +1,28 @@
+# Roda a suíte (npm test) em todo PR e em todo push na main. Não faz deploy: o deploy
+# continua manual na VM (git pull + systemctl restart culto-bot), de propósito — automatizar
+# exigiria guardar no GitHub uma credencial de acesso à VM, a mesma classe de passivo que o
+# token do Fly virou (ver o alerta no README).
+name: testes
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # O puppeteer está no package.json mas nenhum arquivo o usa (sobra da era anterior ao
+      # Baileys). Sem isto o npm ci baixa ~150 MB de Chrome a cada execução, para nada.
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20 # a mesma versão da VM
+          cache: npm
+      - run: npm ci
+      - run: npm test
