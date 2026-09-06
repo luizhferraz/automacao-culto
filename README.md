@@ -124,6 +124,38 @@ terminar, o envio espera a **mesma** abertura em vez de abrir um segundo socket.
 > 4. **GitHub**: apagar o secret `FLY_API_TOKEN` do repositório e revogá-lo no Fly
 >    (`fly tokens revoke`) — sem isso, qualquer workflow futuro poderia reusar o token.
 
+> **⚠️ Na VM de hoje, o estado do bot mora em `/opt/automacao-culto`, não em `/var/lib/culto`.**
+> Conferido em 06/09/2026: o `/etc/culto/culto.env` tem só `YOUTUBE_API_KEY`,
+> `YOUTUBE_CHANNEL_ID`, `WHATSAPP_GROUP_NAME` e `TZ`. Sem a linha `AUTH_DIR`, o código usa o
+> padrão `.baileys_auth`, relativo ao `WorkingDirectory` do serviço. Resultado: a sessão do
+> WhatsApp (e o histórico de mensagens enviadas) está em `/opt/automacao-culto/.baileys_auth`,
+> a memória de janela em `/opt/automacao-culto/janelas-enviadas.json` e o diagnóstico em
+> `/opt/automacao-culto/diagnostico/`; `/var/lib/culto` está vazio. Todo comando deste README
+> que aponta para `/var/lib/culto` responde "No such file" até a migração abaixo. O bot
+> funciona assim, mas código e dados misturados têm dois riscos: um `git clean` ou um clone
+> novo destrói a sessão (parear de novo pelo QR) e a memória de envios do dia; e o
+> `git status` mostrava os dois arquivos como sujeira a cada deploy — por isso os dois entraram
+> no `.gitignore`.
+>
+> **Migração, a fazer fora de horário de culto e depois da semana de 14 a 18/09** (mexe na
+> sessão do WhatsApp da conta; com o serviço parado, é mover três itens e uma linha no env):
+>
+> ```bash
+> sudo systemctl stop culto-bot
+> sudo mv /opt/automacao-culto/.baileys_auth /var/lib/culto/baileys_auth
+> sudo mv /opt/automacao-culto/janelas-enviadas.json /var/lib/culto/
+> sudo mv /opt/automacao-culto/diagnostico /var/lib/culto/diagnostico
+> sudo chown -R culto:culto /var/lib/culto
+> echo 'AUTH_DIR=/var/lib/culto/baileys_auth' | sudo tee -a /etc/culto/culto.env
+> sudo systemctl start culto-bot
+> journalctl -u culto-bot -n 20
+> ```
+>
+> A conferência é a linha "Credenciais encontradas" no log de subida, sem pedido de QR code, e
+> o `/var/lib/culto/janelas-enviadas.json` ganhando a marca da janela seguinte. Se o log pedir
+> QR, a sessão não foi encontrada: pare o serviço e confira o caminho na linha `AUTH_DIR`.
+> Feita a migração, este aviso pode ser removido.
+
 **Se o processo subir atrasado** — um restart (teto de vida, deploy, reboot da VM) caindo
 depois do **segundo 0** do minuto agendado de uma janela —, o cron daquele dia já passou e
 não dispara mais (o node-cron só dispara no segundo 0). O bot detecta isso na subida e
