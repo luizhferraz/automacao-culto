@@ -122,13 +122,26 @@ function janelaMarcada(tipo, chave, momento = new Date()) {
 // Uma tabela só, usada pelo cron e pela recuperação de janela perdida da subida. Enquanto
 // isto era três chamadas de cron.schedule copiadas, o horário vivia em dois lugares (a
 // expressão e o texto do console) e não havia como perguntar "estou dentro de uma janela?".
-// Toda janela abre 7 min antes do culto e fecha 30 min depois dele (o fim é início +
+// As janelas fixas abrem 7 min antes do culto e fecham 30 min depois dele (o fim é início +
 // maxTentativas, uma tentativa por minuto). Os 7 min são escolha do Luiz (25/08), no lugar
 // da mistura antiga de 1, 6 e 11: tecnicamente a antecedência é indiferente, então ficou o
 // número bíblico da completude. O avisoAposMin conta do INÍCIO do monitoramento, não do
 // culto — 10 min após a abertura = 3 min depois do culto; quem mudar a abertura precisa
 // mudar o aviso e as tentativas juntos. Em dia de estreia o vídeo costuma já estar publicado
 // quando a janela abre, então a abertura é, na prática, a hora em que o link sai no grupo.
+//
+// Dois campos para janela que não é "toda semana, para sempre":
+//   • diaSemana aceita um número ou uma lista ([1, 2, 3, 4, 5] = segunda a sexta). A memória
+//     em disco já separa por dia (tipo:chave@dia), então uma chave só serve para vários dias.
+//   • vigencia (opcional): { de, ate } em YYYY-MM-DD, dias no fuso da igreja, os dois
+//     inclusos. Fora desse intervalo a janela está na tabela mas não faz nada: o cron dispara
+//     e sai calado, e a recuperação da subida não a reabre. É o que permite uma semana
+//     especial sem depender de alguém lembrar de remover a entrada depois — a alternativa
+//     (entradas temporárias) era o bot procurando culto de madrugada todo dia útil até alguém
+//     notar, e este projeto já pagou caro por um agendador esquecido (o cron-job.org da era
+//     Fly). A expressão do cron só conhece dia da semana, então a vigência é checada em
+//     código, no instante do disparo; a validação na carga do módulo é o que impede uma data
+//     escrita errada de calar a janela em silêncio.
 const JANELAS = [
   {
     chave: 'domingo-manha', rotulo: 'Domingo 09h53', diaSemana: 0, hora: 9, minuto: 53,
@@ -150,9 +163,61 @@ const JANELAS = [
     chave: 'sabado-noite', rotulo: 'Sábado 18h53', diaSemana: 6, hora: 18, minuto: 53,
     maxTentativas: 37, filtroHoras: 7, avisoAposMin: null, fallbackGravacao: false,
   },
+  {
+    // Semana especial de 14 a 18/09/2026: culto às 6h30, de segunda a sexta. Abre às 6h25
+    // (escolha do Luiz, 06/09 — a antecedência de 7 min das janelas fixas não se aplica aqui)
+    // e fecha 30 min depois do culto, às 7h00 = 35 tentativas. Sem aviso de atraso, pelo mesmo
+    // motivo do sábado: transmissão nova em horário incomum, manhã sem live não é incidente
+    // para anunciar no grupo. Na quarta 16/09 este dia tem duas janelas (6h25 e 19h53), com
+    // chaves diferentes — a memória em disco não se confunde. Depois do dia 18 a vigência cala
+    // a janela sozinha; remover a entrada é limpeza, não obrigação.
+    chave: 'semana-manha', rotulo: 'Seg a sex 06h25 (14 a 18/09)', diaSemana: [1, 2, 3, 4, 5],
+    hora: 6, minuto: 25, maxTentativas: 35, filtroHoras: 7, avisoAposMin: null, fallbackGravacao: false,
+    vigencia: { de: '2026-09-14', ate: '2026-09-18' },
+  },
 ];
 
 const inicioEmMinutos = (j) => j.hora * 60 + j.minuto;
+const diasDaSemana = (j) => (Array.isArray(j.diaSemana) ? j.diaSemana : [j.diaSemana]);
+
+// A expressão que o node-cron recebe. Fica numa função para o teste validar a expressão de
+// CADA janela com o próprio node-cron: uma lista de dias mal montada falharia só na subida
+// do serviço, em produção, e não no npm test.
+const expressaoCron = (j) => `${j.minuto} ${j.hora} * * ${diasDaSemana(j).join(',')}`;
+
+// Um YYYY-MM-DD que existe de verdade. O regex barra '2026-9-14' (sem o zero, que nunca
+// compararia certo com o diaNaIgreja); o round-trip pelo Date barra '2026-02-30', que o JS
+// aceita em silêncio e normaliza para 2 de março.
+function diaValido(s) {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().startsWith(s);
+}
+
+// Tabela errada falha na carga, não em silêncio no dia do culto. O npm test carrega este
+// módulo, então o erro aparece antes do deploy — e na VM o serviço nem sobe, o que o
+// systemctl status denuncia na hora, em vez de uma janela que simplesmente não abre.
+function validarJanela(janela) {
+  const { chave, vigencia } = janela;
+  const dias = diasDaSemana(janela);
+  if (dias.length === 0 || dias.some(d => !Number.isInteger(d) || d < 0 || d > 6)) {
+    throw new Error(`Janela ${chave}: diaSemana inválido ${JSON.stringify(janela.diaSemana)} — esperado um número de 0 (domingo) a 6 (sábado), ou uma lista deles`);
+  }
+  if (vigencia === undefined) return;
+  if (!vigencia || !diaValido(vigencia.de) || !diaValido(vigencia.ate) || vigencia.de > vigencia.ate) {
+    throw new Error(`Janela ${chave}: vigencia inválida ${JSON.stringify(vigencia)} — esperado { de: 'YYYY-MM-DD', ate: 'YYYY-MM-DD' } com de <= ate`);
+  }
+}
+JANELAS.forEach(validarJanela);
+
+// Janela sem vigência vale sempre. Com vigência, vale nos dias de..ate no fuso da igreja:
+// comparar texto em YYYY-MM-DD ordena como data, e o dia é o mesmo que a memória em disco
+// usa, então "vigente hoje" e "já enviei hoje" olham para o mesmo calendário.
+function janelaVigente(janela, momento = new Date()) {
+  if (!janela.vigencia) return true;
+  const dia = diaNaIgreja(momento);
+  return dia >= janela.vigencia.de && dia <= janela.vigencia.ate;
+}
 
 /**
  * Dia da semana e minuto do dia no fuso da igreja, sem depender do TZ do processo.
@@ -465,8 +530,16 @@ async function desligar(motivo) {
 function iniciarAgendamentos(config) {
   for (const janela of JANELAS) {
     cron.schedule(
-      `${janela.minuto} ${janela.hora} * * ${janela.diaSemana}`,
-      () => executarJanela(janela, config),
+      expressaoCron(janela),
+      () => {
+        // A expressão do cron só conhece dia da semana; a vigência é decidida aqui, no fuso
+        // da igreja, no instante do disparo. Fora dela o gatilho é silêncio de propósito.
+        if (!janelaVigente(janela)) {
+          console.log(`[Scheduler] Gatilho de ${janela.chave} fora da vigência (${janela.vigencia.de} a ${janela.vigencia.ate}); nada a fazer.`);
+          return;
+        }
+        executarJanela(janela, config);
+      },
       // recoverMissedExecutions: o node-cron checa o relógio num tick de ~1s; um tick que
       // pule o segundo 0 (pausa de GC, CPU da e2-micro estrangulada, drift do setTimeout)
       // perdia o gatilho com o processo VIVO, e nada mais chamava a janela — a recuperação
@@ -482,7 +555,10 @@ function iniciarAgendamentos(config) {
     const fim = inicioEmMinutos(j) + j.maxTentativas;
     const hhmm = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}h${String(min % 60).padStart(2, '0')}`;
     const aviso = j.avisoAposMin === null ? 'sem aviso de atraso' : `aviso de atraso após ${j.avisoAposMin} min`;
-    console.log(`   • ${j.rotulo} → verifica a cada ${INTERVALO_MIN} min até ${hhmm(fim)} (${aviso})`);
+    const vigencia = j.vigencia
+      ? `; só de ${j.vigencia.de} a ${j.vigencia.ate}${janelaVigente(j) ? '' : ' — fora da vigência hoje'}`
+      : '';
+    console.log(`   • ${j.rotulo} → verifica a cada ${INTERVALO_MIN} min até ${hhmm(fim)} (${aviso}${vigencia})`);
   }
   console.log('   Qualquer transmissão ao vivo ou estreia do canal conta como culto (sem filtro de título).');
 
@@ -510,7 +586,9 @@ function janelaPerdida(momento = new Date()) {
   const { diaSemana, minutosDoDia } = agoraNaIgreja(momento);
 
   for (const janela of JANELAS) {
-    if (janela.diaSemana !== diaSemana) continue;
+    if (!diasDaSemana(janela).includes(diaSemana)) continue;
+    // Fora da vigência a janela não existe hoje — nem para o cron, nem para a recuperação.
+    if (!janelaVigente(janela, momento)) continue;
     // Janela cujo link já saiu hoje não é "perdida" — está concluída. Sem esta linha, o
     // restart que o systemd faz após o desligar() reentrava aqui com a live ainda no ar e
     // reenviava o link (o triplo envio de 23/08). O guarda dentro do monitorarAoVivo é a
@@ -529,5 +607,9 @@ function janelaPerdida(momento = new Date()) {
 // (ver testes/simular-aviso.js), que rodam a função real com relógio simulado. JANELAS e
 // agoraNaIgreja saem junto para o teste da recuperação de janela perdida; marcarJanela e
 // janelaMarcada, para os testes da memória de janela em disco; enviarGravacao, para o teste
-// de que a gravação do fallback não sai duas vezes.
-module.exports = { iniciarAgendamentos, monitorarAoVivo, mensagemAtraso, JANELAS, janelaPerdida, marcarJanela, janelaMarcada, enviarGravacao };
+// de que a gravação do fallback não sai duas vezes; janelaVigente, validarJanela e
+// expressaoCron, para os testes da janela com vigência.
+module.exports = {
+  iniciarAgendamentos, monitorarAoVivo, mensagemAtraso, JANELAS, janelaPerdida, marcarJanela,
+  janelaMarcada, enviarGravacao, janelaVigente, validarJanela, expressaoCron,
+};

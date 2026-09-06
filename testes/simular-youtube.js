@@ -22,8 +22,9 @@ const os = require('os');
 // teste escreveria o arquivo na raiz do repositório. Precisa vir ANTES do require do scheduler.
 process.env.AUTH_DIR = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'culto-youtube-')), 'baileys_auth');
 
+const cron = require('node-cron');
 const { escolherPorHorario } = require('../youtube');
-const { JANELAS, janelaPerdida, marcarJanela } = require('../scheduler');
+const { JANELAS, janelaPerdida, marcarJanela, janelaVigente, validarJanela, expressaoCron } = require('../scheduler');
 
 let falhas = 0;
 function checar(descricao, condicao, detalhe = '') {
@@ -368,6 +369,128 @@ function main() {
     const r = janelaPerdida(new Date('2026-08-19T23:10:00.000Z')); // quarta 20h10 BRT, atraso 17
 
     checar('não recupera a janela encerrada', r === null, `→ ${r?.janela?.chave || 'nenhuma'}`);
+    console.log('');
+  }
+
+  console.log('═══ Janela com vigência (semana de 14 a 18/09/2026) ═══\n');
+  // Setembro de 2026: 14 é segunda, 16 quarta, 18 sexta, 19 sábado, 21 a segunda seguinte.
+  // O Brasil não tem horário de verão desde 2019: 06h30 BRT = 09h30 UTC o ano inteiro.
+
+  // 22: a configuração da janela especial
+  {
+    console.log('▶ semana-manha existe na tabela: seg a sex 06h25, 14 a 18/09/2026, sem aviso');
+    const j = janelaPor('semana-manha');
+
+    checar('janela registrada', !!j);
+    checar('segunda a sexta', JSON.stringify(j?.diaSemana) === '[1,2,3,4,5]', `→ ${JSON.stringify(j?.diaSemana)}`);
+    checar('abre às 06h25', j?.hora === 6 && j?.minuto === 25, `→ ${j?.hora}h${j?.minuto}`);
+    checar('35 tentativas (até 07h00, 30 min depois do culto das 06h30)', j?.maxTentativas === 35, `→ ${j?.maxTentativas}`);
+    checar('aviso de atraso desligado', j?.avisoAposMin === null, `→ ${j?.avisoAposMin}`);
+    checar('sem fallback de gravação', j?.fallbackGravacao === false);
+    checar('vigência de 14 a 18/09/2026', j?.vigencia?.de === '2026-09-14' && j?.vigencia?.ate === '2026-09-18', `→ ${JSON.stringify(j?.vigencia)}`);
+    console.log('');
+  }
+
+  // 23: a expressão de cron de cada janela é aceita pelo próprio node-cron
+  {
+    console.log('▶ o node-cron aceita a expressão de todas as janelas (inclusive a lista de dias)');
+    for (const j of JANELAS) {
+      checar(`${j.chave}: "${expressaoCron(j)}"`, cron.validate(expressaoCron(j)));
+    }
+    checar('a lista de dias vira "1,2,3,4,5"', expressaoCron(janelaPor('semana-manha')) === '25 6 * * 1,2,3,4,5');
+    console.log('');
+  }
+
+  // 24: dentro da vigência, a recuperação reconhece a janela
+  {
+    console.log('▶ máquina sobe segunda 14/09 às 06h30: primeiro dia da vigência, o gatilho das 06h25 já passou');
+    const r = janelaPerdida(new Date('2026-09-14T09:30:00.000Z'));
+
+    checar('reconheceu a janela da semana', r?.janela.chave === 'semana-manha', `→ ${r?.janela?.chave || 'nenhuma'}`);
+    checar('com o atraso certo', r?.atrasoMin === 5, `→ ${r?.atrasoMin} min`);
+    console.log('');
+  }
+
+  // 25: o último dia da vigência é incluso
+  {
+    console.log('▶ sexta 18/09 às 06h40: último dia da vigência ainda vale');
+    const r = janelaPerdida(new Date('2026-09-18T09:40:00.000Z'));
+
+    checar('reconheceu a janela da semana', r?.janela.chave === 'semana-manha', `→ ${r?.janela?.chave || 'nenhuma'}`);
+    checar('com o atraso certo', r?.atrasoMin === 15, `→ ${r?.atrasoMin} min`);
+    console.log('');
+  }
+
+  // 26: mesma hora, mesmo dia da semana, semana seguinte: a janela não existe
+  {
+    console.log('▶ segunda 21/09 às 06h30: depois da vigência, a janela não existe mais');
+    const r = janelaPerdida(new Date('2026-09-21T09:30:00.000Z'));
+
+    checar('não recupera nada', r === null, `→ ${r?.janela?.chave || 'nenhuma'}`);
+    console.log('');
+  }
+
+  // 27: e nem na semana anterior
+  {
+    console.log('▶ segunda 07/09 às 06h30: antes da vigência, a janela ainda não existe');
+    const r = janelaPerdida(new Date('2026-09-07T09:30:00.000Z'));
+
+    checar('não recupera nada', r === null, `→ ${r?.janela?.chave || 'nenhuma'}`);
+    console.log('');
+  }
+
+  // 28: quarta 16/09 tem duas janelas no mesmo dia; cada hora encontra a sua
+  {
+    console.log('▶ quarta 16/09: 06h30 é a janela da semana, 20h10 é a quarta-noite de sempre');
+    const manha = janelaPerdida(new Date('2026-09-16T09:30:00.000Z'));
+    const noite = janelaPerdida(new Date('2026-09-16T23:10:00.000Z'));
+
+    checar('06h30 → semana-manha', manha?.janela.chave === 'semana-manha', `→ ${manha?.janela?.chave || 'nenhuma'}`);
+    checar('20h10 → quarta-noite', noite?.janela.chave === 'quarta-noite', `→ ${noite?.janela?.chave || 'nenhuma'}`);
+    console.log('');
+  }
+
+  // 29: sábado 19/09 não está na lista de dias (e já está fora da vigência)
+  {
+    console.log('▶ sábado 19/09 às 06h30: fim de semana não está na lista de dias');
+    const r = janelaPerdida(new Date('2026-09-19T09:30:00.000Z'));
+
+    checar('não recupera nada', r === null, `→ ${r?.janela?.chave || 'nenhuma'}`);
+    console.log('');
+  }
+
+  // 30: a vigência é contada no dia da IGREJA, não no dia UTC
+  {
+    console.log('▶ vigência conta o dia da igreja: às 21h30 de 13/09 já é 14/09 em UTC, e ainda não vale');
+    const semana = janelaPor('semana-manha');
+
+    // 2026-09-14T00:30Z = domingo 13/09 21h30 BRT
+    checar('13/09 21h30 BRT: fora', janelaVigente(semana, new Date('2026-09-14T00:30:00.000Z')) === false);
+    // 2026-09-19T01:30Z = sexta 18/09 22h30 BRT
+    checar('18/09 22h30 BRT: dentro', janelaVigente(semana, new Date('2026-09-19T01:30:00.000Z')) === true);
+    // 2026-09-19T03:00Z = sábado 19/09 00h00 BRT
+    checar('19/09 00h00 BRT: fora', janelaVigente(semana, new Date('2026-09-19T03:00:00.000Z')) === false);
+    checar('janela sem vigência vale sempre', janelaVigente(janelaPor('domingo-manha'), new Date('2030-01-01T12:00:00.000Z')) === true);
+    console.log('');
+  }
+
+  // 31: tabela escrita errada falha na carga, não em silêncio no dia do culto
+  {
+    console.log('▶ vigência ou dia da semana escritos errado são rejeitados na carga do módulo');
+    const rejeita = (janela) => {
+      try { validarJanela({ chave: 'teste', diaSemana: 1, ...janela }); return false; } catch { return true; }
+    };
+
+    checar("'2026-9-14' (sem o zero) é rejeitada", rejeita({ vigencia: { de: '2026-9-14', ate: '2026-09-18' } }));
+    checar("'2026-02-30' (dia que não existe) é rejeitada", rejeita({ vigencia: { de: '2026-02-30', ate: '2026-03-01' } }));
+    checar('de > ate é rejeitada', rejeita({ vigencia: { de: '2026-09-18', ate: '2026-09-14' } }));
+    checar('vigência sem "ate" é rejeitada', rejeita({ vigencia: { de: '2026-09-14' } }));
+    checar('vigência válida passa', !rejeita({ vigencia: { de: '2026-09-14', ate: '2026-09-18' } }));
+    checar('de == ate (um dia só) passa', !rejeita({ vigencia: { de: '2026-09-14', ate: '2026-09-14' } }));
+    checar('sem vigência passa', !rejeita({}));
+    checar('dia da semana 7 é rejeitado', rejeita({ diaSemana: [1, 7] }));
+    checar('lista de dias vazia é rejeitada', rejeita({ diaSemana: [] }));
+    checar('a tabela real inteira passa', JANELAS.every(j => !rejeita(j)));
     console.log('');
   }
 
