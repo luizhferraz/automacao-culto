@@ -377,9 +377,9 @@ function main() {
   // O Brasil não tem horário de verão desde 2019: 06h30 BRT = 09h30 UTC o ano inteiro.
   //
   // O MECANISMO (vigência, lista de dias, validação) é testado com uma janela própria, a
-  // FIXTURE abaixo, somada às janelas fixas da tabela. Assim a entrada temporária
-  // 'semana-manha' pode ser removida depois de 18/09 sem derrubar a suíte — só o cenário 22,
-  // que confere aquela configuração específica, sai junto com ela (e diz isso em vez de falhar).
+  // FIXTURE abaixo, somada às janelas fixas da tabela. Foi isso que permitiu à entrada
+  // temporária 'semana-manha' (14 a 18/09/2026) sair da tabela depois de cumprida sem derrubar
+  // a suíte: só o cenário que conferia aquela configuração específica saiu junto com ela.
   const FIXTURE = {
     chave: 'fixture-semana', rotulo: 'Fixture seg a sex 06h25', diaSemana: [1, 2, 3, 4, 5],
     hora: 6, minuto: 25, maxTentativas: 35, filtroHoras: 7, avisoAposMin: null, fallbackGravacao: false,
@@ -389,24 +389,7 @@ function main() {
   const TABELA = [...FIXAS, FIXTURE];
   const perdidaEm = (iso) => janelaPerdida(new Date(iso), TABELA);
 
-  // 22: a configuração da janela especial de 14 a 18/09/2026, enquanto ela existir na tabela
-  {
-    const j = janelaPor('semana-manha');
-    if (!j) {
-      console.log('▶ semana-manha não está mais na tabela (removida após a vigência): cenário pulado\n');
-    } else {
-      console.log('▶ semana-manha existe na tabela: seg a sex 06h25, 14 a 18/09/2026, sem aviso');
-      checar('segunda a sexta', JSON.stringify(j.diaSemana) === '[1,2,3,4,5]', `→ ${JSON.stringify(j.diaSemana)}`);
-      checar('abre às 06h25', j.hora === 6 && j.minuto === 25, `→ ${j.hora}h${j.minuto}`);
-      checar('35 tentativas (até 07h00, 30 min depois do culto das 06h30)', j.maxTentativas === 35, `→ ${j.maxTentativas}`);
-      checar('aviso de atraso desligado', j.avisoAposMin === null, `→ ${j.avisoAposMin}`);
-      checar('sem fallback de gravação', j.fallbackGravacao === false);
-      checar('vigência de 14 a 18/09/2026', j.vigencia?.de === '2026-09-14' && j.vigencia?.ate === '2026-09-18', `→ ${JSON.stringify(j.vigencia)}`);
-      console.log('');
-    }
-  }
-
-  // 23: a expressão de cron de cada janela é aceita pelo próprio node-cron
+  // 22: a expressão de cron de cada janela é aceita pelo próprio node-cron
   {
     console.log('▶ o node-cron aceita a expressão de todas as janelas (inclusive a lista de dias)');
     for (const j of TABELA) {
@@ -416,7 +399,7 @@ function main() {
     console.log('');
   }
 
-  // 24: dentro da vigência, a recuperação reconhece a janela
+  // 23: dentro da vigência, a recuperação reconhece a janela
   {
     console.log('▶ máquina sobe segunda 14/09 às 06h30: primeiro dia da vigência, o gatilho das 06h25 já passou');
     const r = perdidaEm('2026-09-14T09:30:00.000Z');
@@ -426,7 +409,7 @@ function main() {
     console.log('');
   }
 
-  // 25: o último dia da vigência é incluso
+  // 24: o último dia da vigência é incluso
   {
     console.log('▶ sexta 18/09 às 06h40: último dia da vigência ainda vale');
     const r = perdidaEm('2026-09-18T09:40:00.000Z');
@@ -436,7 +419,7 @@ function main() {
     console.log('');
   }
 
-  // 26: mesma hora, mesmo dia da semana, semana seguinte: a janela não existe
+  // 25: mesma hora, mesmo dia da semana, semana seguinte: a janela não existe
   {
     console.log('▶ segunda 21/09 às 06h30: depois da vigência, a janela não existe mais');
     const r = perdidaEm('2026-09-21T09:30:00.000Z');
@@ -445,7 +428,7 @@ function main() {
     console.log('');
   }
 
-  // 27: e nem na semana anterior
+  // 26: e nem na semana anterior
   {
     console.log('▶ segunda 07/09 às 06h30: antes da vigência, a janela ainda não existe');
     const r = perdidaEm('2026-09-07T09:30:00.000Z');
@@ -454,7 +437,7 @@ function main() {
     console.log('');
   }
 
-  // 28: quarta 16/09 tem duas janelas no mesmo dia; cada hora encontra a sua
+  // 27: quarta 16/09 tem duas janelas no mesmo dia; cada hora encontra a sua
   {
     console.log('▶ quarta 16/09: 06h30 é a janela da semana, 20h10 é a quarta-noite de sempre');
     const manha = perdidaEm('2026-09-16T09:30:00.000Z');
@@ -465,7 +448,7 @@ function main() {
     console.log('');
   }
 
-  // 29: sábado 19/09 não está na lista de dias (e já está fora da vigência)
+  // 28: sábado 19/09 não está na lista de dias (e já está fora da vigência)
   {
     console.log('▶ sábado 19/09 às 06h30: fim de semana não está na lista de dias');
     const r = perdidaEm('2026-09-19T09:30:00.000Z');
@@ -474,7 +457,7 @@ function main() {
     console.log('');
   }
 
-  // 30: uma chave, cinco dias — a memória em disco separa por dia, então o link de segunda
+  // 29: uma chave, cinco dias — a memória em disco separa por dia, então o link de segunda
   // não cala a terça. É a premissa que permite diaSemana em lista com uma chave só.
   {
     console.log('▶ mesma chave em dias seguidos: o link de segunda não cala a terça, a janela esgotada de terça não cala a quarta');
@@ -496,7 +479,7 @@ function main() {
     console.log('');
   }
 
-  // 31: a vigência é contada no dia da IGREJA, não no dia UTC
+  // 30: a vigência é contada no dia da IGREJA, não no dia UTC
   {
     console.log('▶ vigência conta o dia da igreja: às 21h30 de 13/09 já é 14/09 em UTC, e ainda não vale');
 
@@ -510,7 +493,7 @@ function main() {
     console.log('');
   }
 
-  // 32: tabela escrita errada falha na carga, não em silêncio no dia do culto
+  // 31: tabela escrita errada falha na carga, não em silêncio no dia do culto
   {
     console.log('▶ vigência, dia da semana ou chave escritos errado são rejeitados na carga do módulo');
     const erroDe = (fn) => { try { fn(); return null; } catch (e) { return e.message; } };

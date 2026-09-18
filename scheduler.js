@@ -142,6 +142,11 @@ function janelaMarcada(tipo, chave, momento = new Date()) {
 //     Fly). A expressão do cron só conhece dia da semana, então a vigência é checada em
 //     código, no instante do disparo; a validação na carga do módulo é o que impede uma data
 //     escrita errada de calar a janela em silêncio.
+//
+// Nenhuma entrada usa os dois campos hoje. A primeira foi a semana de 14 a 18/09/2026 (culto
+// às 6h30, segunda a sexta, abertura às 6h25, 35 tentativas, sem aviso de atraso), que saiu
+// da tabela depois de cumprida — o exemplo completo está no histórico do git. Os testes do
+// mecanismo usam uma janela própria da suíte, então ele continua coberto sem entrada viva.
 const JANELAS = [
   {
     chave: 'domingo-manha', rotulo: 'Domingo 09h53', diaSemana: 0, hora: 9, minuto: 53,
@@ -162,20 +167,6 @@ const JANELAS = [
     // entrou no padrão dos 7 min.)
     chave: 'sabado-noite', rotulo: 'Sábado 18h53', diaSemana: 6, hora: 18, minuto: 53,
     maxTentativas: 37, filtroHoras: 7, avisoAposMin: null, fallbackGravacao: false,
-  },
-  {
-    // Semana especial de 14 a 18/09/2026: culto às 6h30, de segunda a sexta. Abre às 6h25
-    // (escolha do Luiz, 06/09 — a antecedência de 7 min das janelas fixas não se aplica aqui)
-    // e fecha 30 min depois do culto, às 7h00 = 35 tentativas. Sem aviso de atraso, pelo mesmo
-    // motivo do sábado: transmissão nova em horário incomum, manhã sem live não é incidente
-    // para anunciar no grupo. Na quarta 16/09 este dia tem duas janelas (6h25 e 19h53), com
-    // chaves diferentes — a memória em disco não se confunde. Depois do dia 18 a vigência cala
-    // a janela sozinha (sobra uma linha no journal a cada dia útil às 6h25); remover a entrada
-    // é limpeza, não obrigação — os testes do mecanismo de vigência usam uma janela própria e
-    // não dependem desta entrada, só o cenário que confere ESTA configuração sai junto com ela.
-    chave: 'semana-manha', rotulo: 'Seg a sex 06h25 (14 a 18/09)', diaSemana: [1, 2, 3, 4, 5],
-    hora: 6, minuto: 25, maxTentativas: 35, filtroHoras: 7, avisoAposMin: null, fallbackGravacao: false,
-    vigencia: { de: '2026-09-14', ate: '2026-09-18' },
   },
 ];
 

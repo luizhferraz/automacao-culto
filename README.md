@@ -23,7 +23,6 @@ transmissão sem data não passam — nenhum dos dois tem horário de transmiss�
 | Domingo noite | 18h53 | 19h00 | até 19h30 | 19h03 | Envia link ao vivo; se não encontrar, envia a gravação mais recente (últimas 6h) |
 | Quarta-feira | 19h53 | 20h00 | até 20h30 | 20h03 | Envia link ao vivo |
 | Sábado | 18h53 | 19h00 | até 19h30 | — | Envia link ao vivo. Culto em teste na igreja: **sem** aviso de atraso |
-| Segunda a sexta, **só de 14 a 18/09/2026** | 6h25 | 6h30 | até 7h00 | — | Envia link ao vivo. Semana especial com vigência: fora dessas datas a janela não existe |
 
 As janelas fixas abrem **7 minutos antes** do culto e fecham 30 minutos depois dele. Os 7 min
 foram padronizados em 25/08 (antes era uma mistura de 1, 6 e 11): tecnicamente a antecedência
@@ -34,22 +33,26 @@ no grupo — ele chega ~7 min antes do culto, apontando para a contagem regressi
 **Janela com vigência:** uma entrada de `JANELAS` pode declarar `vigencia: { de, ate }` (datas
 em `YYYY-MM-DD`, no fuso da igreja, as duas inclusas) e `diaSemana` como lista. Fora da
 vigência a janela fica na tabela mas não faz nada: o cron interno dispara, deixa uma linha no
-journal ("Gatilho de semana-manha fora da vigência ... nada a fazer") e sai, e a recuperação
-de janela perdida não a reabre. É assim que a semana de 14 a 18/09 entrou sem depender de
-alguém lembrar de remover a entrada na sexta — a alternativa, entradas temporárias, era o bot
-procurando culto às 6h25 todo dia útil até alguém notar. Data escrita errada (`2026-9-14` sem o
-zero, `2026-02-30`, `de` depois de `ate`) e chave repetida entre duas janelas derrubam a carga
-do módulo, cada uma com a própria mensagem: o `npm test` acusa antes do deploy, e na VM o
-serviço nem sobe, em vez de uma janela que simplesmente não abre. Depois do dia 18 a entrada
-pode ser removida a qualquer momento, como limpeza: os testes do mecanismo usam uma janela
-própria e continuam passando sem ela (só o cenário que confere aquela configuração se anuncia
-como pulado).
+journal (`Gatilho de <chave> fora da vigência ... nada a fazer`) e sai, e a recuperação
+de janela perdida não a reabre. É assim que uma semana especial entra sem depender de alguém
+lembrar de remover a entrada no último dia — a alternativa, entrada temporária sem vigência,
+era o bot procurando culto de madrugada todo dia útil até alguém notar. Data escrita errada
+(`2026-9-14` sem o zero, `2026-02-30`, `de` depois de `ate`) e chave repetida entre duas
+janelas derrubam a carga do módulo, cada uma com a própria mensagem: o `npm test` acusa antes
+do deploy, e na VM o serviço nem sobe, em vez de uma janela que simplesmente não abre.
 
-Para operar: o cron só lê a tabela na subida do processo, então a entrada precisa estar em
-produção (`git pull` + `systemctl restart culto-bot`, fora de horário de culto) **antes** da
-primeira janela. A conferência é o log de subida (`journalctl -u culto-bot -n 20`): a janela
-tem que aparecer na lista, com a vigência — e, antes do primeiro dia, com o sufixo "fora da
-vigência hoje". Se a linha não aparecer, o código novo não chegou à VM.
+**Nenhuma janela usa vigência hoje.** A primeira foi a semana de 14 a 18/09/2026 (culto às
+6h30, segunda a sexta, abertura às 6h25, 35 tentativas, sem aviso de atraso), removida da
+tabela depois de cumprida — o exemplo completo está no histórico do git. O mecanismo continua
+coberto por testes, com uma janela própria da suíte, justamente para a próxima semana especial
+ser uma entrada a mais na tabela e não uma edição à mão na VM.
+
+Para operar uma janela com vigência: o cron só lê a tabela na subida do processo, então a
+entrada precisa estar em produção (`git pull` + `systemctl restart culto-bot`, fora de horário
+de culto) **antes** da primeira janela. A conferência é o log de subida
+(`journalctl -u culto-bot -n 20`): a janela tem que aparecer na lista, com a vigência — e,
+antes do primeiro dia, com o sufixo "fora da vigência hoje". Se a linha não aparecer, o código
+novo não chegou à VM.
 
 **Aviso de atraso:** se o link ainda não foi encontrado 3 minutos após o horário do culto, o bot
 envia uma mensagem ao grupo avisando que a transmissão atrasou. É enviado no máximo uma vez por
@@ -696,8 +699,8 @@ inclusive **dentro do minuto do gatilho** — a zona morta em que o segundo 0 do
 subindo **antes** do horário **não** é, para não rodar a janela duas vezes, e nem a janela
 cujo link de hoje já está registrado em disco (o triplo envio de 23/08) nem a que já se
 esgotou sem link são reabertas pela recuperação. Cobre ainda a janela **com vigência**, com
-uma janela própria do teste (a entrada real de 14 a 18/09 só é conferida enquanto existir):
-a expressão de cron de cada janela validada pelo próprio `node-cron`, a recuperação
+uma janela própria do teste (o mecanismo segue coberto sem nenhuma entrada real usando
+vigência): a expressão de cron de cada janela validada pelo próprio `node-cron`, a recuperação
 reconhecendo a janela no primeiro e no último dia da vigência e ignorando a mesma hora na
 semana anterior e na seguinte, a quarta 16/09 com duas janelas no mesmo dia, a mesma chave em
 dias seguidos (o link de segunda **não** cala a terça, porque a memória em disco separa por
