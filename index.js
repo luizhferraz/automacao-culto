@@ -107,12 +107,15 @@ async function main() {
   console.log('\n✅ Bot rodando! Aguardando os horários agendados...');
   console.log('   (Mantenha este terminal aberto)\n');
 
-  // Conecta já na subida, sem esperar a hora do envio. A máquina liga cerca de 5 min antes
-  // do culto, e esse tempo era desperdiçado com o socket fechado. Conectando agora, a fila de
-  // pedidos de reenvio que o WhatsApp acumulou durante a semana é entregue e atendida com a
+  // Conecta já na subida, sem esperar a hora do envio. Na VM o processo renasce a cada fim de
+  // janela e a cada teto de vida, então a maioria dessas subidas cai FORA de janela: conectando
+  // agora, a fila de pedidos de reenvio que o WhatsApp acumulou é entregue e atendida com a
   // conexão ociosa, o que conserta quem ficou travado no culto anterior antes do envio de hoje.
-  // O grupo vai junto para o preparo das sessões também caber nesta folga, em vez de atrasar
-  // o link na hora do envio.
+  // O grupo vai junto para o preparo das sessões também caber nessa ociosidade, em vez de
+  // atrasar o link na hora do envio.
+  //
+  // (Na era Fly isto se justificava pelos ~5 min entre ligar a máquina e o culto. Aquele
+  // modelo morreu em 22/08; hoje o motivo é outro, mas a ordem continua a mesma.)
   //
   // Sem await: é aquecimento, não pré-requisito. Se a hora do envio chegar antes de ele
   // terminar, o abrirSessao do envio espera a MESMA abertura em vez de abrir um segundo

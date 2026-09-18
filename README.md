@@ -19,37 +19,43 @@ transmissão sem data não passam — nenhum dos dois tem horário de transmiss�
 
 | Dia | Início | Culto | Janela | Aviso de atraso | Comportamento |
 |-----|--------|-------|--------|-----------------|---------------|
-| Domingo manhã | 9h53 | 10h00 | até 10h30 | 10h03 | Envia link ao vivo |
-| Domingo noite | 18h53 | 19h00 | até 19h30 | 19h03 | Envia link ao vivo; se não encontrar, envia a gravação mais recente (últimas 6h) |
-| Quarta-feira | 19h53 | 20h00 | até 20h30 | 20h03 | Envia link ao vivo |
-| Sábado | 18h53 | 19h00 | até 19h30 | — | Envia link ao vivo. Culto em teste na igreja: **sem** aviso de atraso |
-| Segunda a sexta, **só de 14 a 18/09/2026** | 6h25 | 6h30 | até 7h00 | — | Envia link ao vivo. Semana especial com vigência: fora dessas datas a janela não existe |
+| Domingo manhã | 9h55 | 10h00 | até 10h30 | 10h03 | Envia link ao vivo |
+| Domingo noite | 18h55 | 19h00 | até 19h30 | 19h03 | Envia link ao vivo; se não encontrar, envia a gravação mais recente (últimas 6h) |
+| Quarta-feira | 19h55 | 20h00 | até 20h30 | 20h03 | Envia link ao vivo |
+| Sábado | 18h55 | 19h00 | até 19h30 | — | Envia link ao vivo. Culto em teste na igreja: **sem** aviso de atraso |
 
-As janelas fixas abrem **7 minutos antes** do culto e fecham 30 minutos depois dele. Os 7 min
-foram padronizados em 25/08 (antes era uma mistura de 1, 6 e 11): tecnicamente a antecedência
-é indiferente, então ficou o número bíblico da completude. Em dia de estreia o vídeo costuma já
-estar publicado quando a janela abre, então a abertura é, na prática, a hora em que o link sai
-no grupo — ele chega ~7 min antes do culto, apontando para a contagem regressiva.
+As janelas fixas abrem **5 minutos antes** do culto e fecham 30 minutos depois dele. A
+antecedência foi padronizada em 25/08, no lugar da mistura antiga de 1, 6 e 11: como
+tecnicamente ela é indiferente, o valor é escolha de quem opera — foram 7 min (o número
+bíblico da completude) de 25/08 até 18/09/2026, quando o Luiz mudou para 5. O fim da janela e
+o aviso de atraso não se moveram junto: quem encurta a abertura desconta os mesmos minutos de
+`maxTentativas` e de `avisoAposMin`. Em dia de estreia o vídeo costuma já estar publicado
+quando a janela abre, então a abertura é, na prática, a hora em que o link sai no grupo —
+ele chega ~5 min antes do culto, apontando para a contagem regressiva.
 
 **Janela com vigência:** uma entrada de `JANELAS` pode declarar `vigencia: { de, ate }` (datas
 em `YYYY-MM-DD`, no fuso da igreja, as duas inclusas) e `diaSemana` como lista. Fora da
 vigência a janela fica na tabela mas não faz nada: o cron interno dispara, deixa uma linha no
-journal ("Gatilho de semana-manha fora da vigência ... nada a fazer") e sai, e a recuperação
-de janela perdida não a reabre. É assim que a semana de 14 a 18/09 entrou sem depender de
-alguém lembrar de remover a entrada na sexta — a alternativa, entradas temporárias, era o bot
-procurando culto às 6h25 todo dia útil até alguém notar. Data escrita errada (`2026-9-14` sem o
-zero, `2026-02-30`, `de` depois de `ate`) e chave repetida entre duas janelas derrubam a carga
-do módulo, cada uma com a própria mensagem: o `npm test` acusa antes do deploy, e na VM o
-serviço nem sobe, em vez de uma janela que simplesmente não abre. Depois do dia 18 a entrada
-pode ser removida a qualquer momento, como limpeza: os testes do mecanismo usam uma janela
-própria e continuam passando sem ela (só o cenário que confere aquela configuração se anuncia
-como pulado).
+journal (`Gatilho de <chave> fora da vigência ... nada a fazer`) e sai, e a recuperação
+de janela perdida não a reabre. É assim que uma semana especial entra sem depender de alguém
+lembrar de remover a entrada no último dia — a alternativa, entrada temporária sem vigência,
+era o bot procurando culto de madrugada todo dia útil até alguém notar. Data escrita errada
+(`2026-9-14` sem o zero, `2026-02-30`, `de` depois de `ate`) e chave repetida entre duas
+janelas derrubam a carga do módulo, cada uma com a própria mensagem: o `npm test` acusa antes
+do deploy, e na VM o serviço nem sobe, em vez de uma janela que simplesmente não abre.
 
-Para operar: o cron só lê a tabela na subida do processo, então a entrada precisa estar em
-produção (`git pull` + `systemctl restart culto-bot`, fora de horário de culto) **antes** da
-primeira janela. A conferência é o log de subida (`journalctl -u culto-bot -n 20`): a janela
-tem que aparecer na lista, com a vigência — e, antes do primeiro dia, com o sufixo "fora da
-vigência hoje". Se a linha não aparecer, o código novo não chegou à VM.
+**Nenhuma janela usa vigência hoje.** A primeira foi a semana de 14 a 18/09/2026 (culto às
+6h30, segunda a sexta, abertura às 6h25, 35 tentativas, sem aviso de atraso), removida da
+tabela depois de cumprida — o exemplo completo está no histórico do git. O mecanismo continua
+coberto por testes, com uma janela própria da suíte, justamente para a próxima semana especial
+ser uma entrada a mais na tabela e não uma edição à mão na VM.
+
+Para operar uma janela com vigência: o cron só lê a tabela na subida do processo, então a
+entrada precisa estar em produção (`git pull` + `systemctl restart culto-bot`, fora de horário
+de culto) **antes** da primeira janela. A conferência é o log de subida
+(`journalctl -u culto-bot -n 20`): a janela tem que aparecer na lista, com a vigência — e,
+antes do primeiro dia, com o sufixo "fora da vigência hoje". Se a linha não aparecer, o código
+novo não chegou à VM.
 
 **Aviso de atraso:** se o link ainda não foi encontrado 3 minutos após o horário do culto, o bot
 envia uma mensagem ao grupo avisando que a transmissão atrasou. É enviado no máximo uma vez por
@@ -153,7 +159,7 @@ não dispara mais (o node-cron só dispara no segundo 0). O bot detecta isso na 
 **recupera a janela**, com as tentativas descontadas do atraso e o aviso de atraso adiantado,
 desde que o link do dia não esteja registrado em disco e a janela não tenha sido esgotada
 hoje. A recuperação vale **desde o atraso zero**: um boot dentro do próprio minuto do gatilho
-(9h53m08s, digamos) também já perdeu o cron do dia, e o piso antigo de 1 minuto transformava
+(9h55m08s, digamos) também já perdeu o cron do dia, e o piso antigo de 1 minuto transformava
 esses ~59 segundos numa zona morta que matava a janela inteira em silêncio. O cron ainda roda
 com `recoverMissedExecutions`, para um tick que pule o segundo 0 (pausa de GC, CPU da
 e2-micro estrangulada) não perder o gatilho com o processo vivo.
@@ -401,8 +407,8 @@ Desde 22/08 as buscas caras (os dois `search.list`) rodam só **a cada 3 tentati
 cadência, o pior domingo — nenhuma transmissão encontrada em nenhuma janela — custava
 67 tentativas × ~203 ≈ **13,7 mil unidades**, acima do teto, com a quota morrendo no meio da
 janela da noite e levando junto o fallback de gravação. Com a cadência, o pior domingo de hoje
-(duas janelas de 37 tentativas) fica em **~5,5 mil unidades**, e o sábado vazio (resultado
-esperado do culto em teste) em ~2,7 mil. O
+(duas janelas de 35 tentativas) fica em **~5 mil unidades**, e o sábado vazio (resultado
+esperado do culto em teste) em ~2,5 mil. O
 preço é um atraso de até 2 min para uma live que só o search enxerga — e a experiência aqui
 registrada é a oposta: o search é que atrasa, a playlist vê primeiro.
 
@@ -667,14 +673,15 @@ Agradecemos a compreensão de todos! 🙏
 npm test
 ```
 
-São cinco suítes, todas rodando o código real com as dependências externas trocadas por
-dublês. Nenhuma delas toca no YouTube ou no WhatsApp de verdade.
+São seis suítes (sete execuções: a de reenvio roda duas vezes, com `FORCAR_SESSOES` desligado
+e ligado), todas rodando o código real com as dependências externas trocadas por dublês.
+Nenhuma delas toca no YouTube ou no WhatsApp de verdade.
 
-**`testes/simular-aviso.js`** exercita `monitorarAoVivo` com relógio simulado (sem esperar 37
+**`testes/simular-aviso.js`** exercita `monitorarAoVivo` com relógio simulado (sem esperar 35
 minutos). Cobre: aviso no minuto certo nas janelas que o têm, aviso suprimido quando o link
 chega antes do prazo, aviso seguido do link quando ele chega depois, reenvio sem duplicação
 quando o primeiro envio falha, a janela **sem** aviso (sábado, `avisoAposMin: null`)
-segurando a mensagem pelas 37 tentativas completas, e a memória de janela em disco: a mesma
+segurando a mensagem pelas 35 tentativas completas, e a memória de janela em disco: a mesma
 janela executada de novo (o restart do systemd de 23/08) **não** reenvia o link nem repete o
 aviso de atraso; a janela **esgotada** sem link nem chega a reabrir; o envio que estoura o
 prazo e completa depois é **absorvido** na tentativa seguinte (link e aviso) em vez de
@@ -696,8 +703,8 @@ inclusive **dentro do minuto do gatilho** — a zona morta em que o segundo 0 do
 subindo **antes** do horário **não** é, para não rodar a janela duas vezes, e nem a janela
 cujo link de hoje já está registrado em disco (o triplo envio de 23/08) nem a que já se
 esgotou sem link são reabertas pela recuperação. Cobre ainda a janela **com vigência**, com
-uma janela própria do teste (a entrada real de 14 a 18/09 só é conferida enquanto existir):
-a expressão de cron de cada janela validada pelo próprio `node-cron`, a recuperação
+uma janela própria do teste (o mecanismo segue coberto sem nenhuma entrada real usando
+vigência): a expressão de cron de cada janela validada pelo próprio `node-cron`, a recuperação
 reconhecendo a janela no primeiro e no último dia da vigência e ignorando a mesma hora na
 semana anterior e na seguinte, a quarta 16/09 com duas janelas no mesmo dia, a mesma chave em
 dias seguidos (o link de segunda **não** cala a terça, porque a memória em disco separa por

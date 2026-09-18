@@ -184,10 +184,10 @@ async function main() {
 
   // 6: janela sem vigência dispara sempre — a checagem não pode calar as janelas fixas
   {
-    dizer('▶ domingo 20/09 às 09h53: a janela fixa da manhã dispara normalmente');
-    const manha = registrados.find(r => r.expr === '53 9 * * 0').fn;
-    congelarEm('2026-09-20T12:53:00.000Z');
-    manha(new Date('2026-09-20T12:53:00.000Z'));
+    dizer('▶ domingo 20/09 às 09h55: a janela fixa da manhã dispara normalmente');
+    const manha = registrados.find(r => r.expr === '55 9 * * 0').fn;
+    congelarEm('2026-09-20T12:55:00.000Z');
+    manha(new Date('2026-09-20T12:55:00.000Z'));
     await assentar();
 
     checar('uma busca a mais', buscas === 4, `→ ${buscas}`);
