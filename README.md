@@ -673,8 +673,9 @@ Agradecemos a compreensão de todos! 🙏
 npm test
 ```
 
-São cinco suítes, todas rodando o código real com as dependências externas trocadas por
-dublês. Nenhuma delas toca no YouTube ou no WhatsApp de verdade.
+São seis suítes (sete execuções: a de reenvio roda duas vezes, com `FORCAR_SESSOES` desligado
+e ligado), todas rodando o código real com as dependências externas trocadas por dublês.
+Nenhuma delas toca no YouTube ou no WhatsApp de verdade.
 
 **`testes/simular-aviso.js`** exercita `monitorarAoVivo` com relógio simulado (sem esperar 35
 minutos). Cobre: aviso no minuto certo nas janelas que o têm, aviso suprimido quando o link

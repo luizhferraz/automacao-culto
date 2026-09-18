@@ -591,20 +591,24 @@ async function abrirSessaoNova() {
 /**
  * Abre a conexão sem enviar nada.
  *
- * Chamado na subida do processo, e não só na hora do envio. A máquina liga cerca de cinco
- * minutos antes do culto, e esse tempo era desperdiçado com o socket fechado. Conectando
- * cedo, a fila de pedidos de reenvio que o WhatsApp acumulou durante a semana é entregue e
- * atendida com o socket ocioso, antes do envio do dia. Cada pedido atendido também faz o
- * Baileys recriar a sessão daquele aparelho, o que conserta gente que estava travada desde
- * o domingo anterior.
+ * Chamado na subida do processo, e não só na hora do envio. Na VM o processo renasce a cada fim
+ * de janela e a cada teto de vida (90 min), e cada renascimento reconecta e drena o que o
+ * WhatsApp tiver enfileirado com o socket ocioso, antes do envio do dia. Cada pedido atendido
+ * também faz o Baileys recriar a sessão daquele aparelho, o que conserta gente que estava
+ * travada desde o culto anterior.
+ *
+ * Como os ciclos são de no máximo 90 min, a fila praticamente não acumula: um pedido de
+ * reenvio espera minutos. Na era Fly, com a máquina ligada só nos minutos de cada culto, ele
+ * esperava a semana inteira — e era essa fila entupida que gastava a janela de reenvio antes
+ * de os pedidos do grupo de avisos chegarem a ser lidos.
  */
 async function conectar(chatId) {
   try {
     const s = await abrirSessao();
-    // Mede o grupo e, se ligado, recria as sessões AGORA, nos minutos ociosos antes do culto,
-    // e não no meio do enviarMensagem. São 17 idas e voltas com o servidor para um grupo deste
-    // tamanho: fazer isso na hora do envio atrasaria o link à toa, tendo cinco minutos de
-    // folga disponíveis aqui. Se a conexão cair e o envio abrir outra, o preparo roda de novo
+    // Mede o grupo e, se ligado, recria as sessões AGORA, com a conexão ociosa da subida, e
+    // não no meio do enviarMensagem. São 17 idas e voltas com o servidor para um grupo deste
+    // tamanho: fazer isso na hora do envio atrasaria o link à toa, quando a maioria das subidas
+    // acontece fora de janela. Se a conexão cair e o envio abrir outra, o preparo roda de novo
     // na sessão nova, porque o controle (`medido`) vive na sessão.
     if (chatId) await garantirSessoesFrescas(s, chatId);
     return true;
