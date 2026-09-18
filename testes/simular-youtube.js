@@ -524,6 +524,71 @@ function main() {
     console.log('');
   }
 
+  // 32: o acoplamento dos três campos de cada janela fixa, ancorado no horário do CULTO.
+  //
+  // Existe porque o acoplamento estava guardado só por comentário, e isso foi medido: quando a
+  // abertura passou de 7 para 5 min (18/09/2026), a suíte inteira passava com o avisoAposMin
+  // esquecido em 10 — o que jogaria o aviso para 10h05 — e também com o maxTentativas esquecido
+  // em 37, que jogaria o fim para 10h32. Nenhum dos dois é erro de sintaxe, então o
+  // validarTabela não os vê; e o simular-aviso.js não pega porque monta a PRÓPRIA tabela e
+  // afirma o aviso de forma relativa ao avisoAposMin que ele mesmo passa (o campo
+  // avisoEsperado de lá é texto de descrição, não asserção).
+  //
+  // A âncora é o horário que a igreja anuncia, não a abertura: é dele que os três campos
+  // derivam. Mudar a antecedência de propósito faz este cenário falhar, e é assim que ele
+  // avisa que os outros dois campos precisam descer junto.
+  {
+    console.log('▶ as quatro janelas fixas, conferidas contra o horário do culto');
+    const ANTECEDENCIA_MIN = 5;   // a janela abre este tanto antes do culto
+    const FIM_APOS_CULTO_MIN = 30; // e fecha este tanto depois dele
+    const AVISO_APOS_CULTO_MIN = 3; // o aviso de atraso sai este tanto depois do culto
+    const CULTOS = {
+      'domingo-manha': 10 * 60,
+      'domingo-noite': 19 * 60,
+      'quarta-noite': 20 * 60,
+      'sabado-noite': 19 * 60,
+    };
+    const emMinutos = (j) => j.hora * 60 + j.minuto;
+
+    for (const [chave, culto] of Object.entries(CULTOS)) {
+      const j = janelaPor(chave);
+      checar(`${chave}: existe na tabela`, !!j);
+      if (!j) continue;
+
+      const abertura = emMinutos(j);
+      checar(
+        `${chave}: abre ${ANTECEDENCIA_MIN} min antes do culto`,
+        culto - abertura === ANTECEDENCIA_MIN, `→ ${culto - abertura} min`
+      );
+      checar(
+        `${chave}: fecha ${FIM_APOS_CULTO_MIN} min depois do culto (abertura + maxTentativas)`,
+        abertura + j.maxTentativas - culto === FIM_APOS_CULTO_MIN, `→ ${abertura + j.maxTentativas - culto} min`
+      );
+      if (j.avisoAposMin === null) {
+        // Só o sábado, e é decisão de produto (culto em teste), não aritmética.
+        checar(`${chave}: sem aviso de atraso`, chave === 'sabado-noite');
+      } else {
+        checar(
+          `${chave}: avisa ${AVISO_APOS_CULTO_MIN} min depois do culto (abertura + avisoAposMin)`,
+          abertura + j.avisoAposMin - culto === AVISO_APOS_CULTO_MIN, `→ ${abertura + j.avisoAposMin - culto} min`
+        );
+      }
+      // O rótulo é o que o operador lê no journal para conferir se a janela está onde ele
+      // pensa. Sem isto, trocá-lo sozinho passava a suíte inteira e só aparecia como horário
+      // errado no log de subida.
+      checar(
+        `${chave}: rótulo cita a abertura real`,
+        j.rotulo.includes(`${String(j.hora).padStart(2, '0')}h${String(j.minuto).padStart(2, '0')}`), `→ ${j.rotulo}`
+      );
+    }
+
+    // Toda janela fixa tem que estar aqui: uma entrada nova sem culto declarado passaria sem
+    // nenhuma conferência de horário, que é justamente o furo que este cenário fecha.
+    const fixasDeFora = JANELAS.filter(j => !j.vigencia && !(j.chave in CULTOS)).map(j => j.chave);
+    checar('nenhuma janela fixa ficou fora desta conferência', fixasDeFora.length === 0, `→ ${fixasDeFora.join(', ') || 'nenhuma'}`);
+    console.log('');
+  }
+
   console.log('═══════════════════════════════════');
   if (falhas === 0) {
     console.log('✅ Todos os cenários passaram.\n');
