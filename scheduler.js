@@ -9,7 +9,7 @@ const diagnostico = require('./diagnostico');
 const INTERVALO_MIN = 1;
 
 // Folga sobre o número de tentativas antes de a janela desistir pelo relógio. Existe porque
-// "37 tentativas" só equivale a 37 minutos enquanto cada tentativa for rápida: com a rede
+// "35 tentativas" só equivale a 35 minutos enquanto cada tentativa for rápida: com a rede
 // ruim, cada uma pode levar bem mais que o intervalo. Sem este teto a janela invadiria a
 // noite, e janela aberta é socket aberto segurando a sessão da conta.
 const FOLGA_JANELA_MIN = 5;
@@ -122,13 +122,14 @@ function janelaMarcada(tipo, chave, momento = new Date()) {
 // Uma tabela só, usada pelo cron e pela recuperação de janela perdida da subida. Enquanto
 // isto era três chamadas de cron.schedule copiadas, o horário vivia em dois lugares (a
 // expressão e o texto do console) e não havia como perguntar "estou dentro de uma janela?".
-// As janelas fixas abrem 7 min antes do culto e fecham 30 min depois dele (o fim é início +
-// maxTentativas, uma tentativa por minuto). Os 7 min são escolha do Luiz (25/08), no lugar
-// da mistura antiga de 1, 6 e 11: tecnicamente a antecedência é indiferente, então ficou o
-// número bíblico da completude. O avisoAposMin conta do INÍCIO do monitoramento, não do
-// culto — 10 min após a abertura = 3 min depois do culto; quem mudar a abertura precisa
-// mudar o aviso e as tentativas juntos. Em dia de estreia o vídeo costuma já estar publicado
-// quando a janela abre, então a abertura é, na prática, a hora em que o link sai no grupo.
+// As janelas fixas abrem 5 min antes do culto e fecham 30 min depois dele (o fim é início +
+// maxTentativas, uma tentativa por minuto). Foram 7 min de 25/08 até 18/09/2026 — o número
+// bíblico da completude, escolhido no lugar da mistura antiga de 1, 6 e 11 —, e o Luiz
+// encurtou para 5. Tecnicamente a antecedência é indiferente; o que não é indiferente é
+// mexer nela sozinha: o avisoAposMin conta do INÍCIO do monitoramento, não do culto — 8 min
+// após a abertura = 3 min depois do culto; quem mudar a abertura precisa mudar o aviso e as
+// tentativas juntos. Em dia de estreia o vídeo costuma já estar publicado quando a janela
+// abre, então a abertura é, na prática, a hora em que o link sai no grupo.
 //
 // Dois campos para janela que não é "toda semana, para sempre":
 //   • diaSemana aceita um número ou uma lista ([1, 2, 3, 4, 5] = segunda a sexta). A memória
@@ -149,24 +150,24 @@ function janelaMarcada(tipo, chave, momento = new Date()) {
 // mecanismo usam uma janela própria da suíte, então ele continua coberto sem entrada viva.
 const JANELAS = [
   {
-    chave: 'domingo-manha', rotulo: 'Domingo 09h53', diaSemana: 0, hora: 9, minuto: 53,
-    maxTentativas: 37, filtroHoras: 8, avisoAposMin: 10, fallbackGravacao: false,
+    chave: 'domingo-manha', rotulo: 'Domingo 09h55', diaSemana: 0, hora: 9, minuto: 55,
+    maxTentativas: 35, filtroHoras: 8, avisoAposMin: 8, fallbackGravacao: false,
   },
   {
-    chave: 'domingo-noite', rotulo: 'Domingo 18h53', diaSemana: 0, hora: 18, minuto: 53,
-    maxTentativas: 37, filtroHoras: 7, avisoAposMin: 10, fallbackGravacao: true,
+    chave: 'domingo-noite', rotulo: 'Domingo 18h55', diaSemana: 0, hora: 18, minuto: 55,
+    maxTentativas: 35, filtroHoras: 7, avisoAposMin: 8, fallbackGravacao: true,
   },
   {
-    chave: 'quarta-noite', rotulo: 'Quarta 19h53', diaSemana: 3, hora: 19, minuto: 53,
-    maxTentativas: 37, filtroHoras: 7, avisoAposMin: 10, fallbackGravacao: false,
+    chave: 'quarta-noite', rotulo: 'Quarta 19h55', diaSemana: 3, hora: 19, minuto: 55,
+    maxTentativas: 35, filtroHoras: 7, avisoAposMin: 8, fallbackGravacao: false,
   },
   {
     // Culto das 19h ainda em fase de teste na igreja, por isso avisoAposMin: null — sábado
     // sem transmissão é resultado esperado, não incidente para anunciar no grupo. (Abria às
     // 18h49, 11 min antes, enquanto o horário oscilava; o culto firmou às 19h e a janela
-    // entrou no padrão dos 7 min.)
-    chave: 'sabado-noite', rotulo: 'Sábado 18h53', diaSemana: 6, hora: 18, minuto: 53,
-    maxTentativas: 37, filtroHoras: 7, avisoAposMin: null, fallbackGravacao: false,
+    // entrou no padrão das outras janelas.)
+    chave: 'sabado-noite', rotulo: 'Sábado 18h55', diaSemana: 6, hora: 18, minuto: 55,
+    maxTentativas: 35, filtroHoras: 7, avisoAposMin: null, fallbackGravacao: false,
   },
 ];
 
@@ -474,7 +475,7 @@ async function enviarGravacao(chave, nomeGrupo, apiKey, channelId) {
  * `atrasoMin` é quanto da janela já passou quando ela começa, e só é diferente de zero na
  * recuperação da subida (ver iniciarAgendamentos). Ele encurta as tentativas para o
  * desligamento acontecer no mesmo horário de sempre, e adianta o aviso de atraso: se o culto
- * já começou faz seis minutos e ainda não há link, não faz sentido esperar mais quatro para
+ * já começou faz seis minutos e ainda não há link, não faz sentido esperar mais dois para
  * avisar o grupo.
  */
 async function executarJanela(janela, config, atrasoMin = 0) {
@@ -541,7 +542,7 @@ async function desligar(motivo) {
  *
  * A recuperação existe porque o cron dispara em UM segundo do dia e não olha para trás: o
  * node-cron transforma o padrão de 5 campos em "segundo 0 do minuto agendado", então quem
- * sobe às 19h01 — ou às 18h53m08s — nunca vê o gatilho das 18h53, e o processo passa a noite
+ * sobe às 19h01 — ou às 18h55m08s — nunca vê o gatilho das 18h55, e o processo passa a noite
  * inteira de pé sem fazer nada: sem link, sem aviso, e com o socket do WhatsApp aberto
  * segurando a sessão da conta, que é o que emudece o celular do dono.
  *
@@ -608,7 +609,7 @@ function iniciarAgendamentos(config, janelas = JANELAS) {
  *
  * O piso é atraso ZERO, e isso é deliberado. O node-cron só dispara no segundo 0 do minuto
  * agendado; um processo que renasce DENTRO do minuto do gatilho (o teto de vida ou o fim de
- * uma janela derrubando o processo às 9h53m5x, systemd religando ~12s depois) sobe com o
+ * uma janela derrubando o processo às 9h55m5x, systemd religando ~12s depois) sobe com o
  * segundo 0 já passado — o cron de hoje nunca mais dispara, e um piso de 1 minuto deixava a
  * janela morrer inteira nessa zona morta de ~59s, sem link e sem aviso, com o log parecendo
  * saudável. Recuperar com atraso 0 não duplica nada: no caso raríssimo de o boot cair no
