@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin de Janelas de Culto (Protótipo)</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card-bg: #ffffff;
+    --text: #1f2430;
+    --text-muted: #6b7280;
+    --border: #e2e4e9;
+    --primary: #3457d5;
+    --primary-hover: #2a45ad;
+    --danger: #d0342c;
+    --danger-hover: #a8291f;
+    --success: #1a7f4e;
+    --success-bg: #e6f6ee;
+    --error-bg: #fdecea;
+    --radius: 10px;
+    --shadow: 0 1px 3px rgba(20, 24, 40, 0.08), 0 1px 2px rgba(20, 24, 40, 0.04);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px 16px 80px;
+  }
+
+  .container {
+    max-width: 880px;
+    margin: 0 auto;
+  }
+
+  header.topo {
+    margin-bottom: 24px;
+  }
+
+  header.topo h1 {
+    font-size: 1.5rem;
+    margin: 0 0 4px;
+  }
+
+  header.topo p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+  }
+
+  .aviso-poc {
+    background: #fff7e6;
+    border: 1px solid #f2c94c;
+    color: #7a5c00;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    margin-bottom: 20px;
+  }
+
+  .barra-acoes {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .barra-acoes h2 {
+    font-size: 1.1rem;
+    margin: 0;
+  }
+
+  button {
+    font: inherit;
+    cursor: pointer;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 16px;
+    transition: background-color 0.15s ease;
+  }
+
+  .btn-primario {
+    background: var(--primary);
+    color: #fff;
+  }
+  .btn-primario:hover { background: var(--primary-hover); }
+
+  .btn-secundario {
+    background: #eef0f4;
+    color: var(--text);
+  }
+  .btn-secundario:hover { background: #e0e3ea; }
+
+  .btn-perigo {
+    background: transparent;
+    color: var(--danger);
+    border: 1px solid var(--danger);
+  }
+  .btn-perigo:hover { background: var(--danger); color: #fff; }
+
+  .btn-icone {
+    background: transparent;
+    padding: 6px 10px;
+    color: var(--text-muted);
+  }
+  .btn-icone:hover { background: #eef0f4; color: var(--text); }
+
+  /* ── Lista de janelas ── */
+  #lista-janelas {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .janela-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 14px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .janela-info h3 {
+    margin: 0 0 4px;
+    font-size: 1rem;
+  }
+
+  .janela-info .horario {
+    font-weight: 600;
+    color: var(--primary);
+  }
+
+  .janela-info .dias {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 2px;
+  }
+
+  .janela-acoes {
+    display: flex;
+    gap: 6px;
+  }
+
+  .estado-vazio {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-muted);
+    background: var(--card-bg);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+  }
+
+  /* ── Modal ── */
+  .modal-fundo {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(20, 24, 40, 0.45);
+    align-items: flex-start;
+    justify-content: center;
+    padding: 40px 16px;
+    overflow-y: auto;
+    z-index: 100;
+  }
+
+  .modal-fundo.aberto {
+    display: flex;
+  }
+
+  .modal {
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    padding: 24px;
+    width: 100%;
+    max-width: 440px;
+    box-shadow: 0 12px 32px rgba(20, 24, 40, 0.25);
+  }
+
+  .modal h2 {
+    margin: 0 0 16px;
+    font-size: 1.15rem;
+  }
+
+  .campo {
+    margin-bottom: 16px;
+  }
+
+  .campo label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+
+  .campo input[type="text"],
+  .campo input[type="time"] {
+    width: 100%;
+    padding: 9px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font: inherit;
+  }
+
+  .campo input:focus {
+    outline: 2px solid var(--primary);
+    outline-offset: 1px;
+  }
+
+  .linha-dupla {
+    display: flex;
+    gap: 12px;
+  }
+  .linha-dupla .campo { flex: 1; }
+
+  .dias-semana {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .dia-chip {
+    position: relative;
+  }
+
+  .dia-chip input {
+    position: absolute;
+    opacity: 0;
+    inset: 0;
+    cursor: pointer;
+  }
+
+  .dia-chip span {
+    display: inline-block;
+    padding: 7px 10px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    user-select: none;
+  }
+
+  .dia-chip input:checked + span {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #fff;
+  }
+
+  .campo-erro {
+    color: var(--danger);
+    font-size: 0.8rem;
+    margin-top: 6px;
+    display: none;
+  }
+
+  .campo-erro.visivel { display: block; }
+
+  .modal-acoes {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 20px;
+  }
+
+  /* ── Toast ── */
+  #toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    box-shadow: var(--shadow);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    z-index: 200;
+    max-width: 90vw;
+  }
+
+  #toast.visivel {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  #toast.sucesso { background: var(--success-bg); color: var(--success); border: 1px solid #a8dcc0; }
+  #toast.erro { background: var(--error-bg); color: var(--danger); border: 1px solid #f3b6b1; }
+
+  @media (max-width: 520px) {
+    .linha-dupla { flex-direction: column; gap: 0; }
+    .janela-card { flex-direction: column; align-items: flex-start; }
+    .janela-acoes { align-self: flex-end; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header class="topo">
+    <h1>Janelas de Culto</h1>
+    <p>Protótipo de administração de horários — dados salvos apenas neste navegador.</p>
+  </header>
+
+  <div class="aviso-poc">
+    Prova de conceito. Os dados ficam em <code>localStorage</code> e não afetam o bot em produção.
+    Veja o arquivo <code>README.md</code> desta pasta para o plano de integração com o
+    <code>scheduler.js</code>.
+  </div>
+
+  <div class="barra-acoes">
+    <h2>Janelas cadastradas</h2>
+    <button class="btn-primario" id="btn-nova-janela">+ Nova janela</button>
+  </div>
+
+  <div id="lista-janelas"></div>
+
+</div>
+
+<!-- ── Modal de criação/edição ── -->
+<div class="modal-fundo" id="modal-fundo">
+  <div class="modal">
+    <h2 id="modal-titulo">Nova janela</h2>
+    <form id="form-janela" novalidate>
+      <input type="hidden" id="janela-id">
+
+      <div class="campo">
+        <label for="janela-nome">Nome da janela</label>
+        <input type="text" id="janela-nome" placeholder="Ex.: Domingo manhã" maxlength="60" required>
+        <div class="campo-erro" id="erro-nome">Informe um nome para a janela.</div>
+      </div>
+
+      <div class="linha-dupla">
+        <div class="campo">
+          <label for="janela-inicio">Início</label>
+          <input type="time" id="janela-inicio" required>
+        </div>
+        <div class="campo">
+          <label for="janela-fim">Fim</label>
+          <input type="time" id="janela-fim" required>
+        </div>
+      </div>
+      <div class="campo-erro" id="erro-horario">O horário de fim precisa ser depois do início.</div>
+
+      <div class="campo">
+        <label>Dias da semana</label>
+        <div class="dias-semana" id="dias-semana"></div>
+        <div class="campo-erro" id="erro-dias">Selecione ao menos um dia.</div>
+      </div>
+
+      <div class="campo-erro" id="erro-conflito"></div>
+
+      <div class="modal-acoes">
+        <button type="button" class="btn-secundario" id="btn-cancelar">Cancelar</button>
+        <button type="submit" class="btn-primario">Salvar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/*
+ * Protótipo de administração de janelas de horário de culto.
+ * Vanilla JS, sem dependências, persistência em localStorage.
+ *
+ * Estrutura de dados de uma janela (ver README.md para o mapeamento
+ * completo com o formato usado hoje em scheduler.js):
+ *   {
+ *     id: string,            // identificador único gerado no cliente
+ *     nome: string,          // rótulo livre, ex. "Domingo manhã"
+ *     inicio: "HH:MM",       // início da janela, 24h
+ *     fim: "HH:MM",          // fim da janela, 24h
+ *     diasSemana: number[]   // 0 (domingo) a 6 (sábado), mesma convenção do scheduler.js
+ *   }
+ */
+
+(function () {
+  'use strict';
+
+  const CHAVE_STORAGE = 'culto-janelas-prototipo-v1';
+
+  const NOMES_DIAS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+  const NOMES_DIAS_LONGO = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
+
+  // Semente inicial só para a lista não nascer vazia na primeira visita;
+  // espelha as janelas reais de scheduler.js na data deste protótipo.
+  const JANELAS_SEED = [
+    { id: 'seed-1', nome: 'Domingo manhã', inicio: '09:55', fim: '11:30', diasSemana: [0] },
+    { id: 'seed-2', nome: 'Domingo noite', inicio: '18:55', fim: '20:30', diasSemana: [0] },
+    { id: 'seed-3', nome: 'Quarta noite', inicio: '19:55', fim: '21:30', diasSemana: [3] },
+  ];
+
+  // ── Persistência ────────────────────────────────────────────────────────
+  function carregarJanelas() {
+    try {
+      const bruto = localStorage.getItem(CHAVE_STORAGE);
+      if (!bruto) return JANELAS_SEED.slice();
+      const dados = JSON.parse(bruto);
+      return Array.isArray(dados) ? dados : JANELAS_SEED.slice();
+    } catch {
+      return JANELAS_SEED.slice();
+    }
+  }
+
+  function salvarJanelas(janelas) {
+    localStorage.setItem(CHAVE_STORAGE, JSON.stringify(janelas));
+  }
+
+  let janelas = carregarJanelas();
+
+  // ── Utilitários de horário ──────────────────────────────────────────────
+  function paraMinutos(hhmm) {
+    const [h, m] = hhmm.split(':').map(Number);
+    return h * 60 + m;
+  }
+
+  function formatarDias(diasSemana) {
+    return diasSemana
+      .slice()
+      .sort((a, b) => a - b)
+      .map(d => NOMES_DIAS[d])
+      .join(', ');
+  }
+
+  // Duas janelas conflitam se compartilham ao menos um dia da semana E os
+  // intervalos [inicio, fim) se sobrepõem nesse dia.
+  function conflitam(a, b) {
+    const diasEmComum = a.diasSemana.some(d => b.diasSemana.includes(d));
+    if (!diasEmComum) return false;
+    const inicioA = paraMinutos(a.inicio), fimA = paraMinutos(a.fim);
+    const inicioB = paraMinutos(b.inicio), fimB = paraMinutos(b.fim);
+    return inicioA < fimB && inicioB < fimA;
+  }
+
+  function encontrarConflito(candidata, ignorarId) {
+    return janelas.find(j => j.id !== ignorarId && conflitam(candidata, j));
+  }
+
+  // ── Toast de feedback ───────────────────────────────────────────────────
+  let toastTimeout;
+  function mostrarToast(mensagem, tipo) {
+    const toast = document.getElementById('toast');
+    toast.textContent = mensagem;
+    toast.className = 'visivel ' + tipo;
+    clearTimeout(toastTimeout);
+    toastTimeout = setTimeout(() => { toast.className = ''; }, 3200);
+  }
+
+  // ── Renderização da lista ───────────────────────────────────────────────
+  function renderizarLista() {
+    const lista = document.getElementById('lista-janelas');
+    lista.innerHTML = '';
+
+    if (janelas.length === 0) {
+      lista.innerHTML = '<div class="estado-vazio">Nenhuma janela cadastrada ainda. Clique em "Nova janela" para começar.</div>';
+      return;
+    }
+
+    const ordenadas = janelas.slice().sort((a, b) => {
+      const diaA = Math.min(...a.diasSemana), diaB = Math.min(...b.diasSemana);
+      if (diaA !== diaB) return diaA - diaB;
+      return paraMinutos(a.inicio) - paraMinutos(b.inicio);
+    });
+
+    for (const janela of ordenadas) {
+      const card = document.createElement('div');
+      card.className = 'janela-card';
+      card.innerHTML = `
+        <div class="janela-info">
+          <h3>${escaparHtml(janela.nome)}</h3>
+          <div class="horario">${janela.inicio} – ${janela.fim}</div>
+          <div class="dias">${formatarDias(janela.diasSemana)}</div>
+        </div>
+        <div class="janela-acoes">
+          <button class="btn-icone" data-acao="editar" data-id="${janela.id}" title="Editar">Editar</button>
+          <button class="btn-perigo" data-acao="excluir" data-id="${janela.id}" title="Excluir">Excluir</button>
+        </div>
+      `;
+      lista.appendChild(card);
+    }
+  }
+
+  function escaparHtml(texto) {
+    const div = document.createElement('div');
+    div.textContent = texto;
+    return div.innerHTML;
+  }
+
+  // ── Modal: abrir/fechar ─────────────────────────────────────────────────
+  const modalFundo = document.getElementById('modal-fundo');
+  const form = document.getElementById('form-janela');
+
+  function montarChipsDias() {
+    const container = document.getElementById('dias-semana');
+    container.innerHTML = NOMES_DIAS_LONGO.map((nome, i) => `
+      <label class="dia-chip">
+        <input type="checkbox" name="dia" value="${i}">
+        <span>${NOMES_DIAS[i]}</span>
+      </label>
+    `).join('');
+  }
+  montarChipsDias();
+
+  function limparErros() {
+    document.querySelectorAll('.campo-erro').forEach(el => {
+      el.classList.remove('visivel');
+      if (el.id === 'erro-conflito') el.textContent = '';
+    });
+  }
+
+  function abrirModal(janelaExistente) {
+    limparErros();
+    form.reset();
+    document.getElementById('janela-id').value = janelaExistente ? janelaExistente.id : '';
+    document.getElementById('modal-titulo').textContent = janelaExistente ? 'Editar janela' : 'Nova janela';
+
+    if (janelaExistente) {
+      document.getElementById('janela-nome').value = janelaExistente.nome;
+      document.getElementById('janela-inicio').value = janelaExistente.inicio;
+      document.getElementById('janela-fim').value = janelaExistente.fim;
+      document.querySelectorAll('input[name="dia"]').forEach(chk => {
+        chk.checked = janelaExistente.diasSemana.includes(Number(chk.value));
+      });
+    }
+
+    modalFundo.classList.add('aberto');
+    document.getElementById('janela-nome').focus();
+  }
+
+  function fecharModal() {
+    modalFundo.classList.remove('aberto');
+  }
+
+  document.getElementById('btn-nova-janela').addEventListener('click', () => abrirModal(null));
+  document.getElementById('btn-cancelar').addEventListener('click', fecharModal);
+  modalFundo.addEventListener('click', (ev) => {
+    if (ev.target === modalFundo) fecharModal();
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && modalFundo.classList.contains('aberto')) fecharModal();
+  });
+
+  // ── Ações na lista (editar / excluir) ───────────────────────────────────
+  document.getElementById('lista-janelas').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-acao]');
+    if (!btn) return;
+    const id = btn.dataset.id;
+    const janela = janelas.find(j => j.id === id);
+    if (!janela) return;
+
+    if (btn.dataset.acao === 'editar') {
+      abrirModal(janela);
+    } else if (btn.dataset.acao === 'excluir') {
+      if (confirm(`Excluir a janela "${janela.nome}"? Esta ação não pode ser desfeita.`)) {
+        janelas = janelas.filter(j => j.id !== id);
+        salvarJanelas(janelas);
+        renderizarLista();
+        mostrarToast('Janela excluída.', 'sucesso');
+      }
+    }
+  });
+
+  // ── Submissão do formulário (criar / atualizar) ─────────────────────────
+  function gerarId() {
+    return 'janela-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+  }
+
+  form.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    limparErros();
+
+    const id = document.getElementById('janela-id').value;
+    const nome = document.getElementById('janela-nome').value.trim();
+    const inicio = document.getElementById('janela-inicio').value;
+    const fim = document.getElementById('janela-fim').value;
+    const diasSemana = Array.from(document.querySelectorAll('input[name="dia"]:checked')).map(chk => Number(chk.value));
+
+    let valido = true;
+
+    if (!nome) {
+      document.getElementById('erro-nome').classList.add('visivel');
+      valido = false;
+    }
+    if (!inicio || !fim || paraMinutos(fim) <= paraMinutos(inicio)) {
+      document.getElementById('erro-horario').classList.add('visivel');
+      valido = false;
+    }
+    if (diasSemana.length === 0) {
+      document.getElementById('erro-dias').classList.add('visivel');
+      valido = false;
+    }
+
+    if (!valido) return;
+
+    const candidata = { id: id || gerarId(), nome, inicio, fim, diasSemana };
+    const conflito = encontrarConflito(candidata, id || null);
+    if (conflito) {
+      const erroConflito = document.getElementById('erro-conflito');
+      erroConflito.textContent = `Conflito de horário com "${conflito.nome}" (${conflito.inicio}–${conflito.fim}, ${formatarDias(conflito.diasSemana)}).`;
+      erroConflito.classList.add('visivel');
+      return;
+    }
+
+    if (id) {
+      janelas = janelas.map(j => (j.id === id ? candidata : j));
+      mostrarToast('Janela atualizada com sucesso.', 'sucesso');
+    } else {
+      janelas.push(candidata);
+      mostrarToast('Janela criada com sucesso.', 'sucesso');
+    }
+
+    salvarJanelas(janelas);
+    renderizarLista();
+    fecharModal();
+  });
+
+  // ── Inicialização ────────────────────────────────────────────────────────
+  renderizarLista();
+})();
+</script>
+</body>
+</html>
