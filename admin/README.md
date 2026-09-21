@@ -24,17 +24,18 @@ da própria VM.
 
 ## O que a UI ainda não expõe
 
-Por simplicidade, a UI só pede nome, início, fim e dias da semana. Três campos que a tabela real
-tem ficam com valor padrão, fixado em `PADROES_CAMPOS_AVANCADOS` no topo de `admin/server.js`:
+A UI pede nome, início, fim, dias da semana, se avisa atraso no grupo (liga/desliga — quando
+ligado usa sempre 8 min, sem campo pra escolher o número) e, opcionalmente, um período de
+vigência (a janela só existe entre duas datas; fora delas fica na tabela mas não faz nada — ver
+o comentário sobre `vigencia` em `scheduler.js`).
+
+Dois campos da tabela real ainda ficam com valor fixo, em `PADROES_CAMPOS_AVANCADOS` no topo de
+`admin/server.js`:
 
 | Campo | Padrão | Para editar de verdade |
 |---|---|---|
 | `filtroHoras` | `8` | à mão em `janelas-config.json`, ou peça pra eu adicionar na UI |
-| `avisoAposMin` | `8` | idem |
 | `fallbackGravacao` | `false` | idem |
-
-`vigencia` (janela só válida num intervalo de datas) também não tem campo na UI ainda — crie
-direto no arquivo se precisar de uma janela temporária.
 
 ## Instalar na VM
 

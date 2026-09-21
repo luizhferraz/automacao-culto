@@ -28,7 +28,12 @@ const ARQUIVO_INDEX = path.join(__dirname, 'public', 'index.html');
 
 // Padrões para os campos que a UI ainda não expõe (ver admin/README.md). São os mesmos valores
 // que a maioria das janelas da tabela embutida já usa — não é um chute, é o caso comum.
-const PADROES_CAMPOS_AVANCADOS = { filtroHoras: 8, avisoAposMin: 8, fallbackGravacao: false };
+const PADROES_CAMPOS_AVANCADOS = { filtroHoras: 8, fallbackGravacao: false };
+
+// Quantos minutos o aviso de atraso demora pra sair quando a janela liga o aviso (campo
+// "aviso" do payload). É o mesmo valor que domingo-manha, domingo-noite e quarta-noite já
+// usam em JANELAS_PADRAO — a UI só liga/desliga, não deixa escolher o número ainda.
+const AVISO_MIN_PADRAO = 8;
 
 function paraMinutos(hhmm) {
   const [h, m] = hhmm.split(':').map(Number);
@@ -39,12 +44,23 @@ function diasDaJanela(j) {
   return Array.isArray(j.diaSemana) ? j.diaSemana : [j.diaSemana];
 }
 
-// Sobreposição de horário entre duas janelas que compartilham ao menos um dia da semana.
-// validarTabela (scheduler.js) não checa isto — pro bot, duas janelas ao mesmo tempo são só
-// duas tentativas simultâneas, não um erro. Pra uma agenda de cultos, é quase sempre engano.
+// Duas janelas com vigência só podem colidir de verdade se os períodos se cruzarem. Sem isto,
+// uma "quarta especial" só válida em dezembro bloquearia para sempre a quarta-noite normal, que
+// nunca vai tocar de fato nela. Se qualquer uma das duas vale sempre (sem vigência), os
+// períodos sempre se cruzam — é o comportamento de hoje, preservado.
+function vigenciasSobrepoem(a, b) {
+  if (!a.vigencia || !b.vigencia) return true;
+  return a.vigencia.de <= b.vigencia.ate && b.vigencia.de <= a.vigencia.ate;
+}
+
+// Sobreposição de horário entre duas janelas que compartilham ao menos um dia da semana (e,
+// se as duas tiverem vigência, um período em comum). validarTabela (scheduler.js) não checa
+// isto — pro bot, duas janelas ao mesmo tempo são só duas tentativas simultâneas, não um erro.
+// Pra uma agenda de cultos, é quase sempre engano.
 function conflitam(a, b) {
   const emComum = diasDaJanela(a).some(d => diasDaJanela(b).includes(d));
   if (!emComum) return false;
+  if (!vigenciasSobrepoem(a, b)) return false;
   const inicioA = a.hora * 60 + a.minuto, fimA = inicioA + a.maxTentativas;
   const inicioB = b.hora * 60 + b.minuto, fimB = inicioB + b.maxTentativas;
   return inicioA < fimB && inicioB < fimA;
@@ -66,23 +82,28 @@ function gerarChave(nome, chavesExistentes) {
   return `${base}-${n}`;
 }
 
-// Converte o payload da UI (nome/início/fim/dias) para o formato de linha da tabela real.
-// `chave` já existente é passada em edição, para nunca ser regerada a partir do nome — trocar
-// o nome de uma janela não pode órfã-la na memória de janelas-enviadas.json, que indexa por
-// chave.
+// Converte o payload da UI (nome/início/fim/dias/aviso/vigência) para o formato de linha da
+// tabela real. `chave` já existente é passada em edição, para nunca ser regerada a partir do
+// nome — trocar o nome de uma janela não pode órfã-la na memória de janelas-enviadas.json, que
+// indexa por chave.
 function paraLinhaDaTabela(payload, chave) {
   const inicioMin = paraMinutos(payload.inicio);
   const fimMin = paraMinutos(payload.fim);
   const [hora, minuto] = payload.inicio.split(':').map(Number);
-  return {
+  const linha = {
     chave,
     rotulo: payload.nome,
     diaSemana: payload.diasSemana.slice().sort((a, b) => a - b),
     hora,
     minuto,
     maxTentativas: fimMin - inicioMin,
+    avisoAposMin: payload.aviso ? AVISO_MIN_PADRAO : null,
     ...PADROES_CAMPOS_AVANCADOS,
   };
+  if (payload.vigenciaAtiva) {
+    linha.vigencia = { de: payload.vigenciaDe, ate: payload.vigenciaAte };
+  }
+  return linha;
 }
 
 function validarPayload(payload) {
@@ -98,6 +119,16 @@ function validarPayload(payload) {
   const dias = payload.diasSemana;
   if (!Array.isArray(dias) || dias.length === 0 || dias.some(d => !Number.isInteger(d) || d < 0 || d > 6)) {
     erros.push('diasSemana precisa ser uma lista não vazia de números de 0 a 6');
+  }
+  if (typeof payload.aviso !== 'boolean') {
+    erros.push('aviso precisa ser verdadeiro ou falso');
+  }
+  // Datas em si (formato, "de" antes de "ate") são validadas por validarJanela — a mesma
+  // checagem que o scheduler.js usa — quando a tabela inteira é salva; aqui só garante que,
+  // se a vigência está ligada, as duas datas vieram, pra dar um erro claro em vez de deixar
+  // "de: undefined" virar uma mensagem confusa lá na frente.
+  if (payload.vigenciaAtiva && (!payload.vigenciaDe || !payload.vigenciaAte)) {
+    erros.push('período de vigência precisa de data de início e fim');
   }
   return erros;
 }

@@ -72,13 +72,14 @@ async function main() {
     console.log('▶ POST "Reunião de Oração" seg/ter 20:00–21:00: cria com chave sem acento');
     const resp = await api('', {
       method: 'POST',
-      body: JSON.stringify({ nome: 'Reunião de Oração', inicio: '20:00', fim: '21:00', diasSemana: [1, 2] }),
+      body: JSON.stringify({ nome: 'Reunião de Oração', inicio: '20:00', fim: '21:00', diasSemana: [1, 2], aviso: true }),
     });
     const corpo = await resp.json();
     checar('201', resp.status === 201, `→ ${resp.status}`);
     checar('chave sem acento nem espaço', corpo.chave === 'reuniao-de-oracao', `→ ${corpo.chave}`);
     checar('maxTentativas = fim - início em minutos', corpo.maxTentativas === 60, `→ ${corpo.maxTentativas}`);
     checar('hora/minuto extraídos do início', corpo.hora === 20 && corpo.minuto === 0);
+    checar('aviso ligado usa o padrão de 8 min', corpo.avisoAposMin === 8, `→ ${corpo.avisoAposMin}`);
     checar('arquivo gravado e válido pelas mesmas regras do bot', (() => {
       const tabela = JSON.parse(fs.readFileSync(ARQUIVO_CONFIG_JANELAS, 'utf8'));
       validarTabela(tabela); // lança se inválida
@@ -93,7 +94,7 @@ async function main() {
     console.log('▶ POST outra "Reunião de Oração" (dia diferente): chave ganha sufixo -2');
     const resp = await api('', {
       method: 'POST',
-      body: JSON.stringify({ nome: 'Reunião de Oração', inicio: '07:00', fim: '08:00', diasSemana: [6] }),
+      body: JSON.stringify({ nome: 'Reunião de Oração', inicio: '07:00', fim: '08:00', diasSemana: [6], aviso: false }),
     });
     const corpo = await resp.json();
     checar('201', resp.status === 201, `→ ${resp.status}`);
@@ -107,7 +108,7 @@ async function main() {
     const antes = JSON.parse(fs.readFileSync(ARQUIVO_CONFIG_JANELAS, 'utf8')).length;
     const resp = await api('', {
       method: 'POST',
-      body: JSON.stringify({ nome: 'Ensaio', inicio: '20:30', fim: '21:30', diasSemana: [1] }),
+      body: JSON.stringify({ nome: 'Ensaio', inicio: '20:30', fim: '21:30', diasSemana: [1], aviso: false }),
     });
     const corpo = await resp.json();
     const depois = JSON.parse(fs.readFileSync(ARQUIVO_CONFIG_JANELAS, 'utf8')).length;
@@ -122,13 +123,14 @@ async function main() {
     console.log('▶ PUT na janela criada, com nome novo: chave não muda');
     const resp = await api('/' + encodeURIComponent(chaveCriada), {
       method: 'PUT',
-      body: JSON.stringify({ nome: 'Oração de Segunda', inicio: '20:15', fim: '21:00', diasSemana: [1] }),
+      body: JSON.stringify({ nome: 'Oração de Segunda', inicio: '20:15', fim: '21:00', diasSemana: [1], aviso: false }),
     });
     const corpo = await resp.json();
     checar('200', resp.status === 200, `→ ${resp.status}`);
     checar('chave permanece a mesma', corpo.chave === chaveCriada, `→ ${corpo.chave}`);
     checar('rótulo atualizado', corpo.rotulo === 'Oração de Segunda');
     checar('dia da semana atualizado (só segunda agora)', JSON.stringify(corpo.diaSemana) === '[1]', `→ ${JSON.stringify(corpo.diaSemana)}`);
+    checar('aviso desligado na edição vira null', corpo.avisoAposMin === null, `→ ${corpo.avisoAposMin}`);
     console.log('');
   }
 
@@ -137,7 +139,7 @@ async function main() {
     console.log('▶ PUT em chave que não existe: 404');
     const resp = await api('/nao-existe', {
       method: 'PUT',
-      body: JSON.stringify({ nome: 'X', inicio: '10:00', fim: '11:00', diasSemana: [2] }),
+      body: JSON.stringify({ nome: 'X', inicio: '10:00', fim: '11:00', diasSemana: [2], aviso: false }),
     });
     checar('404', resp.status === 404, `→ ${resp.status}`);
     console.log('');
@@ -152,6 +154,49 @@ async function main() {
     const resp2 = await api('', { method: 'GET' });
     const corpo2 = await resp2.json();
     checar('não aparece mais no GET', !corpo2.some(j => j.chave === chaveCriada));
+    console.log('');
+  }
+
+  // 9: duas janelas no mesmo dia/horário mas com vigências que NÃO se cruzam não conflitam.
+  // Quinta não tem nenhuma janela padrão, então o único fator em jogo é a vigência.
+  {
+    console.log('▶ POST com vigência em dezembro: cria normalmente');
+    const respA = await api('', {
+      method: 'POST',
+      body: JSON.stringify({
+        nome: 'Vigília Ano Novo', inicio: '22:00', fim: '23:00', diasSemana: [4], aviso: false,
+        vigenciaAtiva: true, vigenciaDe: '2026-12-01', vigenciaAte: '2026-12-31',
+      }),
+    });
+    const corpoA = await respA.json();
+    checar('201', respA.status === 201, `→ ${respA.status}`);
+    checar('vigência gravada', JSON.stringify(corpoA.vigencia) === '{"de":"2026-12-01","ate":"2026-12-31"}', `→ ${JSON.stringify(corpoA.vigencia)}`);
+
+    console.log('▶ POST mesmo dia/horário sobreposto, vigência em janeiro (não cruza): sem conflito');
+    const respB = await api('', {
+      method: 'POST',
+      body: JSON.stringify({
+        nome: 'Retiro de Janeiro', inicio: '22:30', fim: '23:30', diasSemana: [4], aviso: false,
+        vigenciaAtiva: true, vigenciaDe: '2027-01-01', vigenciaAte: '2027-01-31',
+      }),
+    });
+    checar('201, não 409: períodos não se cruzam', respB.status === 201, `→ ${respB.status}`);
+    console.log('');
+  }
+
+  // 10: mesmo dia/horário, vigências que SE cruzam: conflito de verdade
+  {
+    console.log('▶ POST mesmo dia/horário da Vigília, vigência de dezembro também: 409');
+    const resp = await api('', {
+      method: 'POST',
+      body: JSON.stringify({
+        nome: 'Culto Extra', inicio: '22:15', fim: '23:15', diasSemana: [4], aviso: false,
+        vigenciaAtiva: true, vigenciaDe: '2026-12-15', vigenciaAte: '2026-12-20',
+      }),
+    });
+    const corpo = await resp.json();
+    checar('409', resp.status === 409, `→ ${resp.status}`);
+    checar('cita a Vigília', corpo.erro.includes('Vigília Ano Novo'), `→ ${corpo.erro}`);
     console.log('');
   }
 
