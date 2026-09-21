@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Janelas de Culto — Admin</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card-bg: #ffffff;
+    --text: #1f2430;
+    --text-muted: #6b7280;
+    --border: #e2e4e9;
+    --primary: #3457d5;
+    --primary-hover: #2a45ad;
+    --danger: #d0342c;
+    --success: #1a7f4e;
+    --success-bg: #e6f6ee;
+    --error-bg: #fdecea;
+    --radius: 10px;
+    --shadow: 0 1px 3px rgba(20, 24, 40, 0.08), 0 1px 2px rgba(20, 24, 40, 0.04);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px 16px 80px;
+  }
+
+  .container { max-width: 880px; margin: 0 auto; }
+
+  header.topo { margin-bottom: 24px; }
+  header.topo h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  header.topo p { margin: 0; color: var(--text-muted); font-size: 0.9rem; }
+
+  .aviso {
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    color: #3730a3;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    margin-bottom: 20px;
+  }
+
+  .barra-acoes {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 16px; gap: 12px; flex-wrap: wrap;
+  }
+  .barra-acoes h2 { font-size: 1.1rem; margin: 0; }
+
+  button {
+    font: inherit; cursor: pointer; border: none; border-radius: 8px;
+    padding: 9px 16px; transition: background-color 0.15s ease;
+  }
+  .btn-primario { background: var(--primary); color: #fff; }
+  .btn-primario:hover { background: var(--primary-hover); }
+  .btn-secundario { background: #eef0f4; color: var(--text); }
+  .btn-secundario:hover { background: #e0e3ea; }
+  .btn-perigo { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+  .btn-perigo:hover { background: var(--danger); color: #fff; }
+  .btn-icone { background: transparent; padding: 6px 10px; color: var(--text-muted); }
+  .btn-icone:hover { background: #eef0f4; color: var(--text); }
+
+  #lista-janelas { display: flex; flex-direction: column; gap: 10px; }
+
+  .janela-card {
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 14px 16px;
+    display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .janela-info h3 { margin: 0 0 4px; font-size: 1rem; }
+  .janela-info .horario { font-weight: 600; color: var(--primary); }
+  .janela-info .dias { color: var(--text-muted); font-size: 0.85rem; margin-top: 2px; }
+  .janela-acoes { display: flex; gap: 6px; }
+
+  .estado-vazio, .estado-erro {
+    text-align: center; padding: 40px 20px; color: var(--text-muted);
+    background: var(--card-bg); border: 1px dashed var(--border); border-radius: var(--radius);
+  }
+  .estado-erro { color: var(--danger); border-color: var(--danger); }
+
+  .modal-fundo {
+    display: none; position: fixed; inset: 0; background: rgba(20, 24, 40, 0.45);
+    align-items: flex-start; justify-content: center; padding: 40px 16px; overflow-y: auto; z-index: 100;
+  }
+  .modal-fundo.aberto { display: flex; }
+  .modal {
+    background: var(--card-bg); border-radius: var(--radius); padding: 24px;
+    width: 100%; max-width: 440px; box-shadow: 0 12px 32px rgba(20, 24, 40, 0.25);
+  }
+  .modal h2 { margin: 0 0 16px; font-size: 1.15rem; }
+
+  .campo { margin-bottom: 16px; }
+  .campo label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; }
+  .campo input[type="text"], .campo input[type="time"] {
+    width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; font: inherit;
+  }
+  .campo input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+
+  .linha-dupla { display: flex; gap: 12px; }
+  .linha-dupla .campo { flex: 1; }
+
+  .dias-semana { display: flex; flex-wrap: wrap; gap: 6px; }
+  .dia-chip { position: relative; }
+  .dia-chip input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
+  .dia-chip span {
+    display: inline-block; padding: 7px 10px; border-radius: 20px; border: 1px solid var(--border);
+    font-size: 0.8rem; color: var(--text-muted); user-select: none;
+  }
+  .dia-chip input:checked + span { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+  .campo-erro { color: var(--danger); font-size: 0.8rem; margin-top: 6px; display: none; }
+  .campo-erro.visivel { display: block; }
+
+  .campo-toggle { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 16px; }
+  .campo-toggle input { margin-top: 3px; width: 16px; height: 16px; flex-shrink: 0; }
+  .campo-toggle .texto strong { display: block; font-size: 0.9rem; }
+  .campo-toggle .texto span { display: block; font-size: 0.78rem; color: var(--text-muted); margin-top: 2px; }
+
+  .campo-vigencia { display: none; margin: -6px 0 16px 26px; }
+  .campo-vigencia.aberto { display: flex; gap: 12px; }
+  .campo-vigencia .campo { flex: 1; margin-bottom: 0; }
+
+  .modal-acoes { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+
+  #toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+    padding: 12px 20px; border-radius: 8px; font-size: 0.9rem; box-shadow: var(--shadow);
+    opacity: 0; pointer-events: none; transition: opacity 0.2s ease, transform 0.2s ease;
+    z-index: 200; max-width: 90vw;
+  }
+  #toast.visivel { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.sucesso { background: var(--success-bg); color: var(--success); border: 1px solid #a8dcc0; }
+  #toast.erro { background: var(--error-bg); color: var(--danger); border: 1px solid #f3b6b1; }
+
+  @media (max-width: 520px) {
+    .linha-dupla { flex-direction: column; gap: 0; }
+    .janela-card { flex-direction: column; align-items: flex-start; }
+    .janela-acoes { align-self: flex-end; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header class="topo">
+    <h1>Janelas de Culto</h1>
+    <p>Edições aqui gravam em <code>janelas-config.json</code> na VM e valem na próxima vez que o bot subir.</p>
+  </header>
+
+  <div class="aviso">
+    Esta página só é alcançável de dentro da VM (<code>127.0.0.1</code>). Se você está vendo isto,
+    é porque chegou aqui pelo túnel SSH — não precisa de login.
+  </div>
+
+  <div class="barra-acoes">
+    <h2>Janelas cadastradas</h2>
+    <button class="btn-primario" id="btn-nova-janela">+ Nova janela</button>
+  </div>
+
+  <div id="lista-janelas"><div class="estado-vazio">Carregando…</div></div>
+
+</div>
+
+<div class="modal-fundo" id="modal-fundo">
+  <div class="modal">
+    <h2 id="modal-titulo">Nova janela</h2>
+    <form id="form-janela" novalidate>
+      <input type="hidden" id="janela-chave">
+
+      <div class="campo">
+        <label for="janela-nome">Nome da janela</label>
+        <input type="text" id="janela-nome" placeholder="Ex.: Domingo manhã" maxlength="60" required>
+        <div class="campo-erro" id="erro-nome">Informe um nome para a janela.</div>
+      </div>
+
+      <div class="linha-dupla">
+        <div class="campo">
+          <label for="janela-inicio">Início</label>
+          <input type="time" id="janela-inicio" required>
+        </div>
+        <div class="campo">
+          <label for="janela-fim">Fim</label>
+          <input type="time" id="janela-fim" required>
+        </div>
+      </div>
+      <div class="campo-erro" id="erro-horario">O horário de fim precisa ser depois do início.</div>
+
+      <div class="campo">
+        <label>Dias da semana</label>
+        <div class="dias-semana" id="dias-semana"></div>
+        <div class="campo-erro" id="erro-dias">Selecione ao menos um dia.</div>
+      </div>
+
+      <label class="campo-toggle">
+        <input type="checkbox" id="janela-aviso">
+        <span class="texto">
+          <strong>Avisar atraso no grupo</strong>
+          <span>Se o link não sair 8 min depois da abertura, manda um aviso de instabilidade no WhatsApp.</span>
+        </span>
+      </label>
+
+      <label class="campo-toggle">
+        <input type="checkbox" id="janela-vigencia-ativa">
+        <span class="texto">
+          <strong>Só valer num período específico</strong>
+          <span>Fora dessas datas a janela fica na lista mas não faz nada. Pra um único dia, use a mesma data nos dois campos.</span>
+        </span>
+      </label>
+      <div class="campo-vigencia" id="campo-vigencia">
+        <div class="campo">
+          <label for="janela-vigencia-de">De</label>
+          <input type="date" id="janela-vigencia-de">
+        </div>
+        <div class="campo">
+          <label for="janela-vigencia-ate">Até</label>
+          <input type="date" id="janela-vigencia-ate">
+        </div>
+      </div>
+      <div class="campo-erro" id="erro-vigencia">Informe as duas datas do período.</div>
+
+      <div class="campo-erro" id="erro-servidor"></div>
+
+      <div class="modal-acoes">
+        <button type="button" class="btn-secundario" id="btn-cancelar">Cancelar</button>
+        <button type="submit" class="btn-primario" id="btn-salvar">Salvar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  const NOMES_DIAS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+  const NOMES_DIAS_LONGO = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
+
+  function paraMinutos(hhmm) {
+    const [h, m] = hhmm.split(':').map(Number);
+    return h * 60 + m;
+  }
+
+  function hhmm(n) {
+    const h = Math.floor(n / 60), m = n % 60;
+    return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+  }
+
+  function diasDaJanela(j) {
+    return Array.isArray(j.diaSemana) ? j.diaSemana : [j.diaSemana];
+  }
+
+  function formatarDias(diasSemana) {
+    return diasSemana.slice().sort((a, b) => a - b).map(d => NOMES_DIAS[d]).join(', ');
+  }
+
+  function formatarData(isoData) {
+    const [ano, mes, dia] = isoData.split('-');
+    return `${dia}/${mes}/${ano}`;
+  }
+
+  function escaparHtml(texto) {
+    const div = document.createElement('div');
+    div.textContent = texto;
+    return div.innerHTML;
+  }
+
+  let toastTimeout;
+  function mostrarToast(mensagem, tipo) {
+    const toast = document.getElementById('toast');
+    toast.textContent = mensagem;
+    toast.className = 'visivel ' + tipo;
+    clearTimeout(toastTimeout);
+    toastTimeout = setTimeout(() => { toast.className = ''; }, 3200);
+  }
+
+  async function api(caminho, opcoes) {
+    const resp = await fetch('/api/janelas' + caminho, {
+      headers: { 'Content-Type': 'application/json' },
+      ...opcoes,
+    });
+    if (resp.status === 204) return null;
+    const corpo = await resp.json().catch(() => null);
+    if (!resp.ok) {
+      const erro = new Error((corpo && corpo.erro) || `Erro ${resp.status}`);
+      erro.status = resp.status;
+      throw erro;
+    }
+    return corpo;
+  }
+
+  let janelas = [];
+
+  async function carregarERenderizar() {
+    const lista = document.getElementById('lista-janelas');
+    try {
+      janelas = await api('', { method: 'GET' });
+      renderizarLista();
+    } catch (err) {
+      lista.innerHTML = `<div class="estado-erro">Não consegui carregar as janelas: ${escaparHtml(err.message)}</div>`;
+    }
+  }
+
+  function renderizarLista() {
+    const lista = document.getElementById('lista-janelas');
+    lista.innerHTML = '';
+
+    if (janelas.length === 0) {
+      lista.innerHTML = '<div class="estado-vazio">Nenhuma janela cadastrada ainda. Clique em "Nova janela" para começar.</div>';
+      return;
+    }
+
+    const ordenadas = janelas.slice().sort((a, b) => {
+      const diaA = Math.min(...diasDaJanela(a)), diaB = Math.min(...diasDaJanela(b));
+      if (diaA !== diaB) return diaA - diaB;
+      return (a.hora * 60 + a.minuto) - (b.hora * 60 + b.minuto);
+    });
+
+    for (const janela of ordenadas) {
+      const inicioMin = janela.hora * 60 + janela.minuto;
+      const fimMin = inicioMin + janela.maxTentativas;
+      const card = document.createElement('div');
+      card.className = 'janela-card';
+      const badges = [
+        janela.vigencia ? `Só de ${formatarData(janela.vigencia.de)} a ${formatarData(janela.vigencia.ate)}` : null,
+        janela.avisoAposMin === null ? 'Sem aviso de atraso' : 'Avisa atraso no grupo',
+      ].filter(Boolean).join(' · ');
+      card.innerHTML = `
+        <div class="janela-info">
+          <h3>${escaparHtml(janela.rotulo)}</h3>
+          <div class="horario">${hhmm(inicioMin)} – ${hhmm(fimMin)}</div>
+          <div class="dias">${formatarDias(diasDaJanela(janela))}</div>
+          <div class="dias">${badges}</div>
+        </div>
+        <div class="janela-acoes">
+          <button class="btn-icone" data-acao="editar" data-chave="${escaparHtml(janela.chave)}">Editar</button>
+          <button class="btn-perigo" data-acao="excluir" data-chave="${escaparHtml(janela.chave)}">Excluir</button>
+        </div>
+      `;
+      lista.appendChild(card);
+    }
+  }
+
+  const modalFundo = document.getElementById('modal-fundo');
+  const form = document.getElementById('form-janela');
+
+  function montarChipsDias() {
+    const container = document.getElementById('dias-semana');
+    container.innerHTML = NOMES_DIAS_LONGO.map((nome, i) => `
+      <label class="dia-chip">
+        <input type="checkbox" name="dia" value="${i}">
+        <span>${NOMES_DIAS[i]}</span>
+      </label>
+    `).join('');
+  }
+  montarChipsDias();
+
+  const chkVigenciaAtiva = document.getElementById('janela-vigencia-ativa');
+  const campoVigencia = document.getElementById('campo-vigencia');
+  chkVigenciaAtiva.addEventListener('change', () => {
+    campoVigencia.classList.toggle('aberto', chkVigenciaAtiva.checked);
+  });
+
+  function limparErros() {
+    document.querySelectorAll('.campo-erro').forEach(el => {
+      el.classList.remove('visivel');
+      if (el.id === 'erro-servidor') el.textContent = '';
+    });
+  }
+
+  function abrirModal(janelaExistente) {
+    limparErros();
+    form.reset();
+    document.getElementById('janela-chave').value = janelaExistente ? janelaExistente.chave : '';
+    document.getElementById('modal-titulo').textContent = janelaExistente ? 'Editar janela' : 'Nova janela';
+
+    campoVigencia.classList.remove('aberto');
+
+    if (janelaExistente) {
+      const inicioMin = janelaExistente.hora * 60 + janelaExistente.minuto;
+      document.getElementById('janela-nome').value = janelaExistente.rotulo;
+      document.getElementById('janela-inicio').value = hhmm(inicioMin);
+      document.getElementById('janela-fim').value = hhmm(inicioMin + janelaExistente.maxTentativas);
+      document.querySelectorAll('input[name="dia"]').forEach(chk => {
+        chk.checked = diasDaJanela(janelaExistente).includes(Number(chk.value));
+      });
+      document.getElementById('janela-aviso').checked = janelaExistente.avisoAposMin !== null;
+      if (janelaExistente.vigencia) {
+        chkVigenciaAtiva.checked = true;
+        campoVigencia.classList.add('aberto');
+        document.getElementById('janela-vigencia-de').value = janelaExistente.vigencia.de;
+        document.getElementById('janela-vigencia-ate').value = janelaExistente.vigencia.ate;
+      }
+    }
+
+    modalFundo.classList.add('aberto');
+    document.getElementById('janela-nome').focus();
+  }
+
+  function fecharModal() {
+    modalFundo.classList.remove('aberto');
+  }
+
+  document.getElementById('btn-nova-janela').addEventListener('click', () => abrirModal(null));
+  document.getElementById('btn-cancelar').addEventListener('click', fecharModal);
+  modalFundo.addEventListener('click', (ev) => { if (ev.target === modalFundo) fecharModal(); });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && modalFundo.classList.contains('aberto')) fecharModal();
+  });
+
+  document.getElementById('lista-janelas').addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button[data-acao]');
+    if (!btn) return;
+    const chave = btn.dataset.chave;
+    const janela = janelas.find(j => j.chave === chave);
+    if (!janela) return;
+
+    if (btn.dataset.acao === 'editar') {
+      abrirModal(janela);
+    } else if (btn.dataset.acao === 'excluir') {
+      if (!confirm(`Excluir a janela "${janela.rotulo}"? Esta ação não pode ser desfeita.`)) return;
+      try {
+        await api('/' + encodeURIComponent(chave), { method: 'DELETE' });
+        mostrarToast('Janela excluída.', 'sucesso');
+        await carregarERenderizar();
+      } catch (err) {
+        mostrarToast(err.message, 'erro');
+      }
+    }
+  });
+
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    limparErros();
+
+    const chave = document.getElementById('janela-chave').value;
+    const nome = document.getElementById('janela-nome').value.trim();
+    const inicio = document.getElementById('janela-inicio').value;
+    const fim = document.getElementById('janela-fim').value;
+    const diasSemana = Array.from(document.querySelectorAll('input[name="dia"]:checked')).map(chk => Number(chk.value));
+    const aviso = document.getElementById('janela-aviso').checked;
+    const vigenciaAtiva = chkVigenciaAtiva.checked;
+    const vigenciaDe = document.getElementById('janela-vigencia-de').value;
+    const vigenciaAte = document.getElementById('janela-vigencia-ate').value;
+
+    let valido = true;
+    if (!nome) { document.getElementById('erro-nome').classList.add('visivel'); valido = false; }
+    if (!inicio || !fim || paraMinutos(fim) <= paraMinutos(inicio)) {
+      document.getElementById('erro-horario').classList.add('visivel'); valido = false;
+    }
+    if (diasSemana.length === 0) { document.getElementById('erro-dias').classList.add('visivel'); valido = false; }
+    if (vigenciaAtiva && (!vigenciaDe || !vigenciaAte)) {
+      document.getElementById('erro-vigencia').classList.add('visivel'); valido = false;
+    }
+    if (!valido) return;
+
+    const payload = { nome, inicio, fim, diasSemana, aviso, vigenciaAtiva, vigenciaDe, vigenciaAte };
+    const btnSalvar = document.getElementById('btn-salvar');
+    btnSalvar.disabled = true;
+    try {
+      if (chave) {
+        await api('/' + encodeURIComponent(chave), { method: 'PUT', body: JSON.stringify(payload) });
+        mostrarToast('Janela atualizada com sucesso.', 'sucesso');
+      } else {
+        await api('', { method: 'POST', body: JSON.stringify(payload) });
+        mostrarToast('Janela criada com sucesso.', 'sucesso');
+      }
+      fecharModal();
+      await carregarERenderizar();
+    } catch (err) {
+      const erroServidor = document.getElementById('erro-servidor');
+      erroServidor.textContent = err.message;
+      erroServidor.classList.add('visivel');
+    } finally {
+      btnSalvar.disabled = false;
+    }
+  });
+
+  carregarERenderizar();
+})();
+</script>
+</body>
+</html>

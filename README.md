@@ -592,6 +592,12 @@ sudo systemctl restart culto-bot
 sudo journalctl -u culto-bot -n 20 -o cat   # conferir a subida
 ```
 
+### 7. UI admin das janelas (opcional)
+
+Editar as janelas (horário, dias, criar/excluir) sem mexer em código nem fazer deploy: ver
+[`admin/README.md`](./admin/README.md) — outro serviço systemd, só acessível de dentro da VM
+via túnel SSH, sem login.
+
 ---
 
 ## Comandos úteis
@@ -770,7 +776,8 @@ culto-automation/
 ├── whatsapp.js             # Conexão e envio via Baileys (sessão única por janela)
 ├── mensagens-enviadas.js   # Histórico em disco, usado para atender pedidos de reenvio
 ├── diagnostico.js          # Log filtrado e resumo por janela gravados em disco
-├── testes/                 # Aviso de atraso, escolha do vídeo, gatilho do cron, fiação da busca, reenvio e diagnóstico
+├── admin/                  # UI web pra editar as janelas sem mexer em código — ver admin/README.md
+├── testes/                 # Aviso de atraso, escolha do vídeo, gatilho do cron, fiação da busca, reenvio, diagnóstico e admin
 ├── fly.toml                # Era Fly.io — aposentado na migração de 22/08, mantido como histórico
 └── Dockerfile              # Imagem Docker (Node 20 Alpine) — não usada na VM, que roda node direto
 ```
