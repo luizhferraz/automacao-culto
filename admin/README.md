@@ -80,33 +80,79 @@ sudo systemctl enable --now culto-admin
 sudo journalctl -u culto-admin -n 20 -o cat   # confirma: "Admin de janelas em http://127.0.0.1:8080"
 ```
 
-## Acessar (só de casa, via túnel SSH)
+## Acessar (túnel SSH, sem login)
 
-Nenhum login: quem chega na página já passou pela autenticação do SSH. De qualquer terminal com
-acesso à VM:
+Nenhum login: quem chega na página já passou pela autenticação do SSH. Use o terminal do seu
+computador (não o Cloud Shell do navegador — ele é uma máquina remota também, `localhost` lá não
+chega ao seu navegador local sem o Web Preview dele). Precisa do `gcloud` CLI instalado
+localmente uma vez (`brew install --cask google-cloud-sdk` no macOS, depois `gcloud init`).
 
 ```bash
 # se a VM é a mesma do "gcloud compute ssh" do README principal:
-gcloud compute ssh culto-bot --zone=us-east1-b -- -L 8080:localhost:8080
+gcloud compute ssh culto-bot --zone=us-east1-b -- -L 127.0.0.1:8080:localhost:8080
 
 # se o acesso é SSH direto (chave própria, sem gcloud):
-ssh -L 8080:localhost:8080 usuario@ip-da-vm
+ssh -L 127.0.0.1:8080:localhost:8080 usuario@ip-da-vm
 ```
 
 Deixe esse terminal aberto — é ele que sustenta o túnel — e abra `http://localhost:8080` no
 navegador. Fechar o terminal (ou `Ctrl+C`) derruba o túnel e a página para de responder até
 abrir de novo.
 
-## Atualizar
+## Fluxo do dia a dia
 
-Mesma rotina do bot: `git pull` + restart, fora de horário de culto por precaução (embora este
-serviço, ao contrário do `culto-bot`, não segure nenhuma sessão de WhatsApp).
+Duas rotinas diferentes: editar uma janela (não mexe em código) e atualizar o código deste
+projeto (quando uma mudança for enviada pro repositório).
+
+### A. Editar uma janela
+
+1. Abrir o túnel (comando da seção "Acessar" acima) e deixar o terminal aberto.
+2. Abrir `http://localhost:8080`, criar/editar/excluir. O toast de sucesso já confirma que a
+   gravação em `janelas-config.json` funcionou.
+3. Se a mudança precisa valer **agora** (não pode esperar o próximo restart natural do bot):
+   ```bash
+   sudo systemctl restart culto-bot
+   ```
+   Sem isso, ainda vale — só que só no fim da janela atual ou no teto de vida de 90 min, o que
+   vier primeiro (ver "O bot só lê esse arquivo na subida", acima).
+4. Conferir (opcional, só quando quiser ter certeza — véspera de culto, ou depois de mexer em
+   algo sensível):
+   ```bash
+   sudo journalctl -u culto-bot -n 20 -o cat
+   ```
+   Procure `🗓️ Agendamentos configurados` e a lista de janelas logo abaixo; confirma que o bot
+   já está usando a tabela que você acabou de editar.
+
+### B. Atualizar o código
 
 ```bash
 cd /opt/automacao-culto
 sudo -u culto git pull
-sudo systemctl restart culto-admin
 ```
+
+Reinicie só o que mudou — `git pull` mostra quais arquivos vieram:
+
+```bash
+# mudou só admin/**:
+sudo systemctl restart culto-admin
+
+# mudou scheduler.js, whatsapp.js, youtube.js ou index.js:
+sudo systemctl restart culto-bot
+
+# na dúvida, os dois:
+sudo systemctl restart culto-bot culto-admin
+```
+
+Confira a subida:
+
+```bash
+sudo journalctl -u culto-bot -n 20 -o cat     # procure "✅ Credenciais encontradas" — NUNCA
+                                                # deve pedir QR Code; se pedir, NÃO escaneie
+sudo journalctl -u culto-admin -n 10 -o cat   # procure "Admin de janelas em http://127.0.0.1:8080"
+```
+
+Fora de horário de culto por precaução, embora `culto-admin` (ao contrário do `culto-bot`) não
+segure nenhuma sessão de WhatsApp.
 
 ## Backup
 
