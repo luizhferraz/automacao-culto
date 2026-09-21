@@ -148,7 +148,11 @@ function janelaMarcada(tipo, chave, momento = new Date()) {
 // às 6h30, segunda a sexta, abertura às 6h25, 35 tentativas, sem aviso de atraso), que saiu
 // da tabela depois de cumprida — o exemplo completo está no histórico do git. Os testes do
 // mecanismo usam uma janela própria da suíte, então ele continua coberto sem entrada viva.
-const JANELAS = [
+//
+// Esta constante é a semente: o que o bot usa quando a UI admin (admin/server.js) nunca editou
+// nada, e o que ela usa de volta se o arquivo editável sumir ou vier corrompido. Ver
+// carregarTabelaJanelas logo abaixo para quem decide qual das duas tabelas vale.
+const JANELAS_PADRAO = [
   {
     chave: 'domingo-manha', rotulo: 'Domingo 09h55', diaSemana: 0, hora: 9, minuto: 55,
     maxTentativas: 35, filtroHoras: 8, avisoAposMin: 8, fallbackGravacao: false,
@@ -231,7 +235,34 @@ function validarTabela(janelas) {
     chaves.add(janela.chave);
   }
 }
-validarTabela(JANELAS);
+validarTabela(JANELAS_PADRAO);
+
+// A UI admin (ver admin/server.js) edita uma cópia da tabela fora do repositório, no mesmo
+// diretório persistente que janelas-enviadas.json já usa — sobrevive a deploy porque deploy
+// não toca nesse diretório. Sem esse arquivo (instalação nova, ou UI nunca usada), o bot segue
+// com JANELAS_PADRAO de sempre; com o arquivo presente mas ilegível ou inválido, também — um
+// arquivo corrompido nunca deve derrubar o bot, só deixá-lo temporariamente sem as últimas
+// edições feitas pela UI. É a mesma política de "falha de leitura vale como estado neutro" que
+// lerJanelasMarcadas já usa acima.
+const ARQUIVO_CONFIG_JANELAS = path.join(path.dirname(DIR_AUTH), 'janelas-config.json');
+
+function carregarTabelaJanelas() {
+  let bruto;
+  try {
+    bruto = fs.readFileSync(ARQUIVO_CONFIG_JANELAS, 'utf8');
+  } catch {
+    return JANELAS_PADRAO;
+  }
+  try {
+    const tabela = JSON.parse(bruto);
+    validarTabela(tabela);
+    return tabela;
+  } catch (err) {
+    console.warn(`[Scheduler] ${ARQUIVO_CONFIG_JANELAS} inválido (${err.message}); usando a tabela padrão embutida.`);
+    return JANELAS_PADRAO;
+  }
+}
+const JANELAS = carregarTabelaJanelas();
 
 // Janela sem vigência vale sempre. Com vigência, vale nos dias de..ate no fuso da igreja:
 // comparar texto em YYYY-MM-DD ordena como data, e o dia é o mesmo que a memória em disco
@@ -642,8 +673,13 @@ function janelaPerdida(momento = new Date(), janelas = JANELAS) {
 // agoraNaIgreja saem junto para o teste da recuperação de janela perdida; marcarJanela e
 // janelaMarcada, para os testes da memória de janela em disco; enviarGravacao, para o teste
 // de que a gravação do fallback não sai duas vezes; janelaVigente, validarJanela,
-// validarTabela e expressaoCron, para os testes da janela com vigência.
+// validarTabela e expressaoCron, para os testes da janela com vigência. ARQUIVO_CONFIG_JANELAS,
+// JANELAS_PADRAO, gravarAtomico e carregarTabelaJanelas saem para admin/server.js reusar o
+// mesmo caminho de arquivo, a mesma semente, a mesma escrita atômica e a mesma leitura com
+// fallback em vez de duplicá-los — a UI e o bot precisam concordar sobre o que é uma tabela
+// válida.
 module.exports = {
   iniciarAgendamentos, monitorarAoVivo, mensagemAtraso, JANELAS, janelaPerdida, marcarJanela,
   janelaMarcada, enviarGravacao, janelaVigente, validarJanela, validarTabela, expressaoCron,
+  ARQUIVO_CONFIG_JANELAS, JANELAS_PADRAO, gravarAtomico, carregarTabelaJanelas,
 };

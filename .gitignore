@@ -8,4 +8,5 @@ node_modules/
 # Estado do bot quando AUTH_DIR não está definido (cai na pasta de trabalho do serviço;
 # ver o aviso "estado do bot em /opt/automacao-culto" no README). Nunca é código.
 janelas-enviadas.json*
+janelas-config.json*
 diagnostico/
