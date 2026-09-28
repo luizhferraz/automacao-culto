@@ -29,7 +29,7 @@ Em produção, conferido no `janelas-config.json` em 28/09/2026:
 | Dia | Abre | Culto | Janela | Aviso de atraso | Comportamento |
 |-----|------|-------|--------|-----------------|---------------|
 | Domingo manhã | 9h55 | 10h00 | até 10h30 | 10h03 | Envia link ao vivo |
-| Domingo noite (estreia) | 18h59 | 19h00 | até 19h30 | 19h07 | Envia link da estreia. Fallback de gravação **desligado** (ver abaixo) |
+| Domingo noite (estreia) | 18h59 | 19h00 | até 19h30 | 19h07 | Envia link da estreia; se não encontrar, envia a gravação mais recente (últimas 6h) |
 | Quarta-feira | 19h55 | 20h00 | até 20h30 | 20h03 | Envia link ao vivo |
 
 As janelas de culto ao vivo abrem **5 minutos antes** do culto e fecham 30 minutos depois dele.
@@ -47,14 +47,15 @@ colateral aceito: o aviso de atraso conta da abertura (8 min), e cai às 19h07 e
 como a estreia normalmente já está publicada, ele quase nunca dispara. Se o culto voltar a ser
 ao vivo, a janela volta para 18h55.
 
-**Fallback de gravação do domingo à noite está desligado.** Na tabela embutida ele é ligado
-(se nenhuma transmissão aparecer, o bot envia a gravação mais recente das últimas 6h). Ele foi
-desligado sem ninguém decidir: até o PR #21, toda edição pelo admin regravava os campos que a
-tela não mostra com os padrões, e mudar o horário da janela para 18h59 zerou o
-`fallbackGravacao` (e trocou `filtroHoras` de 7 para 8, aqui e na quarta, sem efeito prático).
-O #21 impede que se repita; religar é decisão de quem opera, e se faz uma vez à mão no
-`janelas-config.json` (`"fallbackGravacao": true` na chave `domingo-noite`) seguido de
-`sudo systemctl restart culto-bot`.
+**Fallback de gravação do domingo à noite: religado à mão em 28/09/2026.** Se nenhuma
+transmissão aparecer até o fim da janela, o bot envia a gravação mais recente das últimas 6h.
+Ele tinha sido desligado sem ninguém decidir: até o PR #21, toda edição pelo admin regravava os
+campos que a tela não mostra com os padrões, e mudar o horário da janela para 18h59 zerou o
+`fallbackGravacao` (e trocou `filtroHoras` de 7 para 8, aqui e na quarta, sem efeito prático,
+e assim ficou). O #21 impede que se repita. Como a UI não mostra o campo, a única conferência
+é o próprio arquivo: `sudo grep -A12 '"domingo-noite"' /var/lib/culto/janelas-config.json`
+tem que trazer `"fallbackGravacao": true`. Para mudar, edita-se à mão o `janelas-config.json`
+(com `sudo -u culto`, para manter o dono) e roda-se `sudo systemctl restart culto-bot`.
 
 **Sábado saiu de produção.** O culto das 19h de sábado (em teste, sem aviso de atraso) não
 está no `janelas-config.json`: não é necessário no momento. A entrada continua na tabela
@@ -653,7 +654,7 @@ Culto da Família | 01/06 | 10h
 https://www.youtube.com/watch?v=...
 ```
 
-**Gravação (fallback, hoje desligado em produção; ver "Horários monitorados"):**
+**Gravação (fallback, domingo à noite):**
 ```
 🎬 Culto disponível para assistir
 
