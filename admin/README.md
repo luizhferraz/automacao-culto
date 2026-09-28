@@ -37,6 +37,12 @@ Dois campos da tabela real ainda ficam com valor fixo, em `PADROES_CAMPOS_AVANCA
 | `filtroHoras` | `8` | à mão em `janelas-config.json`, ou peça pra eu adicionar na UI |
 | `fallbackGravacao` | `false` | idem |
 
+Esses padrões valem só para janela **nova**. Numa edição, o que a UI não mostra fica como
+estava na janela: `filtroHoras`, `fallbackGravacao` e o número do aviso de atraso (a UI só liga
+e desliga; ligado numa janela que já tinha um número próprio, o número fica; recém-ligado, vale
+8). Até 28/09/2026 não era assim: toda edição regravava os padrões, e mudar só o horário do
+domingo à noite (18h55 → 18h59) desligou em silêncio o fallback de gravação daquela janela.
+
 ## Instalar na VM
 
 Supõe a VM já configurada como na seção "Configuração inicial" do README principal

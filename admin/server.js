@@ -86,7 +86,13 @@ function gerarChave(nome, chavesExistentes) {
 // tabela real. `chave` já existente é passada em edição, para nunca ser regerada a partir do
 // nome — trocar o nome de uma janela não pode órfã-la na memória de janelas-enviadas.json, que
 // indexa por chave.
-function paraLinhaDaTabela(payload, chave) {
+//
+// `existente` é a linha atual, em edição. O que a UI não mostra vem dela, não dos padrões:
+// até 28/09/2026 toda edição regravava filtroHoras e fallbackGravacao com o padrão e o aviso
+// ligado com 8 min, e mudar só o horário do domingo à noite (18h55 → 18h59) desligou em
+// silêncio o fallback de gravação daquela janela — ninguém decidiu isso, a tela nem mostra o
+// campo. Os padrões continuam valendo para janela nova.
+function paraLinhaDaTabela(payload, chave, existente = null) {
   const inicioMin = paraMinutos(payload.inicio);
   const fimMin = paraMinutos(payload.fim);
   const [hora, minuto] = payload.inicio.split(':').map(Number);
@@ -97,8 +103,13 @@ function paraLinhaDaTabela(payload, chave) {
     hora,
     minuto,
     maxTentativas: fimMin - inicioMin,
-    avisoAposMin: payload.aviso ? AVISO_MIN_PADRAO : null,
-    ...PADROES_CAMPOS_AVANCADOS,
+    // O aviso é liga/desliga na UI: ligado numa janela que já tinha um número próprio mantém
+    // o número; recém-ligado (ou janela nova) usa o padrão.
+    avisoAposMin: payload.aviso
+      ? (Number.isInteger(existente?.avisoAposMin) ? existente.avisoAposMin : AVISO_MIN_PADRAO)
+      : null,
+    filtroHoras: existente?.filtroHoras ?? PADROES_CAMPOS_AVANCADOS.filtroHoras,
+    fallbackGravacao: existente?.fallbackGravacao ?? PADROES_CAMPOS_AVANCADOS.fallbackGravacao,
   };
   if (payload.vigenciaAtiva) {
     linha.vigencia = { de: payload.vigenciaDe, ate: payload.vigenciaAte };
@@ -227,7 +238,7 @@ async function tratarApi(req, res, partesUrl) {
     const errosPayload = validarPayload(payload);
     if (errosPayload.length > 0) return responderJson(res, 400, { erro: errosPayload.join('; ') });
 
-    const atualizada = paraLinhaDaTabela(payload, chave);
+    const atualizada = paraLinhaDaTabela(payload, chave, existente);
     const conflito = tabela.find(j => j.chave !== chave && conflitam(atualizada, j));
     if (conflito) {
       return responderJson(res, 409, { erro: `Conflito de horário com "${conflito.rotulo}" (chave ${conflito.chave})` });
