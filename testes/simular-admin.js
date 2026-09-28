@@ -200,6 +200,52 @@ async function main() {
     console.log('');
   }
 
+  // 11: edição não pode zerar o que a UI não mostra. Foi o que aconteceu em produção: mudar só
+  // o horário do domingo à noite (18h55 → 18h59) desligou o fallback de gravação da janela.
+  {
+    console.log('▶ PUT só no horário de domingo-noite: fallback, filtro e aviso próprios ficam');
+    const original = JANELAS_PADRAO.find(j => j.chave === 'domingo-noite');
+    // Aviso com número próprio (não o padrão 8), gravado direto no arquivo como faria uma
+    // edição à mão: prova que o liga/desliga da UI não apaga o número.
+    const tabela = JSON.parse(fs.readFileSync(ARQUIVO_CONFIG_JANELAS, 'utf8'));
+    tabela.find(j => j.chave === 'domingo-noite').avisoAposMin = 4;
+    fs.writeFileSync(ARQUIVO_CONFIG_JANELAS, JSON.stringify(tabela, null, 2));
+
+    const editar = (aviso) => api('/domingo-noite', {
+      method: 'PUT',
+      body: JSON.stringify({ nome: 'Culto da Família - Estreia', inicio: '18:59', fim: '19:30', diasSemana: [0], aviso }),
+    }).then(async r => ({ status: r.status, corpo: await r.json() }));
+
+    const { status, corpo } = await editar(true);
+    checar('200', status === 200, `→ ${status}`);
+    checar('horário atualizado', corpo.hora === 18 && corpo.minuto === 59 && corpo.maxTentativas === 31, `→ ${corpo.hora}:${corpo.minuto}, ${corpo.maxTentativas}`);
+    checar('fallback de gravação preservado', corpo.fallbackGravacao === original.fallbackGravacao && corpo.fallbackGravacao === true, `→ ${corpo.fallbackGravacao}`);
+    checar('filtroHoras preservado', corpo.filtroHoras === original.filtroHoras, `→ ${corpo.filtroHoras}`);
+    checar('aviso ligado mantém o número próprio', corpo.avisoAposMin === 4, `→ ${corpo.avisoAposMin}`);
+    const gravada = JSON.parse(fs.readFileSync(ARQUIVO_CONFIG_JANELAS, 'utf8')).find(j => j.chave === 'domingo-noite');
+    checar('e é isso que fica no arquivo', gravada.fallbackGravacao === true && gravada.avisoAposMin === 4, `→ ${JSON.stringify(gravada)}`);
+
+    const desligado = await editar(false);
+    checar('aviso desligado vira null', desligado.corpo.avisoAposMin === null, `→ ${desligado.corpo.avisoAposMin}`);
+    const religado = await editar(true);
+    checar('religado depois de desligado usa o padrão de 8 min', religado.corpo.avisoAposMin === 8, `→ ${religado.corpo.avisoAposMin}`);
+    checar('fallback continua preservado depois das três edições', religado.corpo.fallbackGravacao === true, `→ ${religado.corpo.fallbackGravacao}`);
+    console.log('');
+  }
+
+  // 12: janela nova continua nascendo com os padrões
+  {
+    console.log('▶ POST de janela nova: campos que a UI não mostra usam os padrões');
+    const resp = await api('', {
+      method: 'POST',
+      body: JSON.stringify({ nome: 'Ensaio', inicio: '15:00', fim: '15:30', diasSemana: [4], aviso: true }),
+    });
+    const corpo = await resp.json();
+    checar('201', resp.status === 201, `→ ${resp.status}`);
+    checar('filtroHoras 8, sem fallback, aviso 8', corpo.filtroHoras === 8 && corpo.fallbackGravacao === false && corpo.avisoAposMin === 8, `→ ${JSON.stringify(corpo)}`);
+    console.log('');
+  }
+
   console.log('═══════════════════════════════════');
   servidor.close();
   if (falhas === 0) {
