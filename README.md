@@ -17,21 +17,50 @@ transmissão sem data não passam — nenhum dos dois tem horário de transmiss�
 
 **Horários monitorados:**
 
-| Dia | Início | Culto | Janela | Aviso de atraso | Comportamento |
-|-----|--------|-------|--------|-----------------|---------------|
-| Domingo manhã | 9h55 | 10h00 | até 10h30 | 10h03 | Envia link ao vivo |
-| Domingo noite | 18h55 | 19h00 | até 19h30 | 19h03 | Envia link ao vivo; se não encontrar, envia a gravação mais recente (últimas 6h) |
-| Quarta-feira | 19h55 | 20h00 | até 20h30 | 20h03 | Envia link ao vivo |
-| Sábado | 18h55 | 19h00 | até 19h30 | — | Envia link ao vivo. Culto em teste na igreja: **sem** aviso de atraso |
+Desde o admin web ([`admin/README.md`](./admin/README.md)), a tabela que vale em produção é a
+de `/var/lib/culto/janelas-config.json`, editada pela UI. A tabela `JANELAS_PADRAO` de
+`scheduler.js` virou semente e reserva: só é usada se o arquivo não existir ou estiver
+inválido. Por isso as duas podem divergir, e hoje divergem (ver abaixo). A fonte da verdade
+para "o que o bot vai fazer" é o log de subida: `📅 Agendamentos configurados` lista cada janela
+com dia e hora de abertura (ver o passo 4 do fluxo do dia a dia no `admin/README.md`).
 
-As janelas fixas abrem **5 minutos antes** do culto e fecham 30 minutos depois dele. A
-antecedência foi padronizada em 25/08, no lugar da mistura antiga de 1, 6 e 11: como
+Em produção, conferido no `janelas-config.json` em 28/09/2026:
+
+| Dia | Abre | Culto | Janela | Aviso de atraso | Comportamento |
+|-----|------|-------|--------|-----------------|---------------|
+| Domingo manhã | 9h55 | 10h00 | até 10h30 | 10h03 | Envia link ao vivo |
+| Domingo noite (estreia) | 18h59 | 19h00 | até 19h30 | 19h07 | Envia link da estreia. Fallback de gravação **desligado** (ver abaixo) |
+| Quarta-feira | 19h55 | 20h00 | até 20h30 | 20h03 | Envia link ao vivo |
+
+As janelas de culto ao vivo abrem **5 minutos antes** do culto e fecham 30 minutos depois dele.
+A antecedência foi padronizada em 25/08, no lugar da mistura antiga de 1, 6 e 11: como
 tecnicamente ela é indiferente, o valor é escolha de quem opera — foram 7 min (o número
 bíblico da completude) de 25/08 até 18/09/2026, quando o Luiz mudou para 5. O fim da janela e
 o aviso de atraso não se moveram junto: quem encurta a abertura desconta os mesmos minutos de
-`maxTentativas` e de `avisoAposMin`. Em dia de estreia o vídeo costuma já estar publicado
-quando a janela abre, então a abertura é, na prática, a hora em que o link sai no grupo —
-ele chega ~5 min antes do culto, apontando para a contagem regressiva.
+`maxTentativas` e de `avisoAposMin`.
+
+**Domingo à noite abre 1 minuto antes, de propósito.** O culto das 19h hoje é estreia (vídeo
+pré-gravado), e o vídeo costuma já estar publicado quando a janela abre: a abertura é, na
+prática, a hora em que o link sai no grupo. Toda estreia tem uma contagem regressiva de 2 min
+no YouTube, então o link às 18h59 não deixa ninguém parado 5 min diante do cronômetro. Efeito
+colateral aceito: o aviso de atraso conta da abertura (8 min), e cai às 19h07 em vez de 19h03;
+como a estreia normalmente já está publicada, ele quase nunca dispara. Se o culto voltar a ser
+ao vivo, a janela volta para 18h55.
+
+**Fallback de gravação do domingo à noite está desligado.** Na tabela embutida ele é ligado
+(se nenhuma transmissão aparecer, o bot envia a gravação mais recente das últimas 6h). Ele foi
+desligado sem ninguém decidir: até o PR #21, toda edição pelo admin regravava os campos que a
+tela não mostra com os padrões, e mudar o horário da janela para 18h59 zerou o
+`fallbackGravacao` (e trocou `filtroHoras` de 7 para 8, aqui e na quarta, sem efeito prático).
+O #21 impede que se repita; religar é decisão de quem opera, e se faz uma vez à mão no
+`janelas-config.json` (`"fallbackGravacao": true` na chave `domingo-noite`) seguido de
+`sudo systemctl restart culto-bot`.
+
+**Sábado saiu de produção.** O culto das 19h de sábado (em teste, sem aviso de atraso) não
+está no `janelas-config.json`: não é necessário no momento. A entrada continua na tabela
+embutida, então **se o arquivo sumir ou ficar inválido, o bot volta a monitorar o sábado** e o
+domingo à noite volta às 18h55 com fallback. Se o arquivo for recusado, o log de subida traz
+`janelas-config.json inválido (...)`.
 
 **Janela com vigência:** uma entrada de `JANELAS` pode declarar `vigencia: { de, ate }` (datas
 em `YYYY-MM-DD`, no fuso da igreja, as duas inclusas) e `diaSemana` como lista. Fora da
@@ -61,8 +90,9 @@ novo não chegou à VM.
 envia uma mensagem ao grupo avisando que a transmissão atrasou. É enviado no máximo uma vez por
 janela e não interrompe a busca: se o link aparecer depois, ele é enviado normalmente em seguida.
 Se o primeiro envio do aviso falhar, o bot tenta de novo na tentativa seguinte, sem duplicar.
-A janela de sábado não tem aviso (`avisoAposMin: null`): enquanto o culto de sábado for
-experimento, sábado sem transmissão é resultado esperado, não incidente para anunciar no grupo.
+Uma janela pode não ter aviso (`avisoAposMin: null`; na UI, o aviso desligado): é o caso da
+janela de sábado da tabela embutida, porque enquanto o culto de sábado era experimento, sábado
+sem transmissão era resultado esperado, não incidente para anunciar no grupo.
 
 **Memória de janela em disco:** o que cada janela já fez hoje — link enviado, aviso dado,
 gravação do fallback enviada, janela esgotada sem link — fica registrado em
@@ -648,7 +678,7 @@ Culto da Família | 01/06 | 10h
 https://www.youtube.com/watch?v=...
 ```
 
-**Gravação (fallback domingo noite):**
+**Gravação (fallback, hoje desligado em produção; ver "Horários monitorados"):**
 ```
 🎬 Culto disponível para assistir
 
