@@ -183,6 +183,17 @@ const diasDaSemana = (j) => (Array.isArray(j.diaSemana) ? j.diaSemana : [j.diaSe
 // do serviço, em produção, e não no npm test.
 const expressaoCron = (j) => `${j.minuto} ${j.hora} * * ${diasDaSemana(j).join(',')}`;
 
+// Dia e hora de abertura como o operador lê no log de subida ("Domingo 09h55"; lista de dias
+// abreviada: "Seg, Ter, Qua 06h25"). Vem da própria tabela, não do rótulo: janela criada pelo
+// admin tem o nome do culto como rótulo, e sem isto o log não dizia em que dia nem a que
+// horas ela abre — dava para conferir o nome, não o agendamento.
+const NOMES_DIAS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+function descreverAbertura(j) {
+  const dias = diasDaSemana(j);
+  const nomes = dias.length === 1 ? NOMES_DIAS[dias[0]] : dias.map(d => NOMES_DIAS[d].slice(0, 3)).join(', ');
+  return `${nomes} ${String(j.hora).padStart(2, '0')}h${String(j.minuto).padStart(2, '0')}`;
+}
+
 // Um YYYY-MM-DD que existe de verdade. O regex barra '2026-9-14' (sem o zero, que nunca
 // compararia certo com o diaNaIgreja); o round-trip pelo Date barra '2026-02-30', que o JS
 // aceita em silêncio e normaliza para 2 de março.
@@ -623,7 +634,10 @@ function iniciarAgendamentos(config, janelas = JANELAS) {
     const vigencia = j.vigencia
       ? `; só de ${j.vigencia.de} a ${j.vigencia.ate}${janelaVigente(j) ? '' : ' — fora da vigência hoje'}`
       : '';
-    console.log(`   • ${j.rotulo} → verifica a cada ${INTERVALO_MIN} min até ${hhmm(fim)} (${aviso}${vigencia})`);
+    // As janelas da tabela padrão já têm "Domingo 09h55" como rótulo; repetir seria ruído.
+    const abertura = descreverAbertura(j);
+    const nome = j.rotulo === abertura ? abertura : `${abertura} · ${j.rotulo}`;
+    console.log(`   • ${nome} → verifica a cada ${INTERVALO_MIN} min até ${hhmm(fim)} (${aviso}${vigencia})`);
   }
   console.log('   Qualquer transmissão ao vivo ou estreia do canal conta como culto (sem filtro de título).');
 
