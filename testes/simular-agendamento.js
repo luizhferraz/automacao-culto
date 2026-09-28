@@ -114,6 +114,10 @@ async function main() {
     checar('com o fuso da igreja e recoverMissedExecutions', fixture?.opts?.timezone === 'America/Sao_Paulo' && fixture?.opts?.recoverMissedExecutions === true, `→ ${JSON.stringify(fixture?.opts)}`);
     checar('nenhuma busca na subida (fora de qualquer janela)', buscas === 0, `→ ${buscas}`);
     checar('o log de subida mostra a vigência da fixture', linhas.some(l => l.includes('Fixture seg a sex 06h25') && l.includes('só de 2026-09-14 a 2026-09-18') && l.includes('fora da vigência hoje')));
+    // Janela do admin tem o nome do culto como rótulo: o dia e a hora vêm da tabela, na frente.
+    checar('o log de subida põe dia e hora de abertura antes do rótulo', linhas.some(l => l.includes('• Seg, Ter, Qua, Qui, Sex 06h25 · Fixture seg a sex 06h25 →')));
+    // Rótulo que já é o dia e a hora (tabela padrão) não sai repetido.
+    checar('rótulo igual à abertura não se repete', linhas.some(l => l.includes('• Domingo 09h55 →')) && !linhas.some(l => l.includes('Domingo 09h55 · Domingo 09h55')));
     dizer('');
   }
 

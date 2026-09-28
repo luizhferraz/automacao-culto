@@ -118,10 +118,15 @@ projeto (quando uma mudança for enviada pro repositório).
 4. Conferir (opcional, só quando quiser ter certeza — véspera de culto, ou depois de mexer em
    algo sensível):
    ```bash
-   sudo journalctl -u culto-bot -n 20 -o cat
+   sudo journalctl -u culto-bot --since today -o cat | awk '/Agendamentos configurados/{b="";f=1} f{b=b $0 "\n"} END{printf "%s", b}' | head -12
    ```
-   Procure `🗓️ Agendamentos configurados` e a lista de janelas logo abaixo; confirma que o bot
-   já está usando a tabela que você acabou de editar.
+   Mostra o bloco `📅 Agendamentos configurados` da última subida do dia, com a lista de janelas
+   logo abaixo; confirma que o bot já está usando a tabela que você acabou de editar. Não use
+   `-n 20` aqui: ele só pega as últimas 20 linhas, e poucos minutos depois da subida as linhas
+   do WhatsApp (reenvios, conexão) já empurraram o bloco para fora. Se o comando não mostrar
+   nada, o processo ainda não subiu hoje (rode o passo 3). Se a lista não bater com o que você
+   editou, a subida foi antes da edição (rode o passo 3) ou o arquivo foi recusado: procure
+   `janelas-config.json inválido` no mesmo log.
 
 ### B. Atualizar o código
 
