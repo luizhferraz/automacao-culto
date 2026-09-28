@@ -17,21 +17,50 @@ transmissão sem data não passam — nenhum dos dois tem horário de transmiss�
 
 **Horários monitorados:**
 
-| Dia | Início | Culto | Janela | Aviso de atraso | Comportamento |
-|-----|--------|-------|--------|-----------------|---------------|
-| Domingo manhã | 9h55 | 10h00 | até 10h30 | 10h03 | Envia link ao vivo |
-| Domingo noite | 18h55 | 19h00 | até 19h30 | 19h03 | Envia link ao vivo; se não encontrar, envia a gravação mais recente (últimas 6h) |
-| Quarta-feira | 19h55 | 20h00 | até 20h30 | 20h03 | Envia link ao vivo |
-| Sábado | 18h55 | 19h00 | até 19h30 | — | Envia link ao vivo. Culto em teste na igreja: **sem** aviso de atraso |
+Desde o admin web ([`admin/README.md`](./admin/README.md)), a tabela que vale em produção é a
+de `/var/lib/culto/janelas-config.json`, editada pela UI. A tabela `JANELAS_PADRAO` de
+`scheduler.js` virou semente e reserva: só é usada se o arquivo não existir ou estiver
+inválido. Por isso as duas podem divergir, e hoje divergem (ver abaixo). A fonte da verdade
+para "o que o bot vai fazer" é o log de subida: `📅 Agendamentos configurados` lista cada janela
+com dia e hora de abertura (ver o passo 4 do fluxo do dia a dia no `admin/README.md`).
 
-As janelas fixas abrem **5 minutos antes** do culto e fecham 30 minutos depois dele. A
-antecedência foi padronizada em 25/08, no lugar da mistura antiga de 1, 6 e 11: como
+Em produção, conferido no `janelas-config.json` em 28/09/2026:
+
+| Dia | Abre | Culto | Janela | Aviso de atraso | Comportamento |
+|-----|------|-------|--------|-----------------|---------------|
+| Domingo manhã | 9h55 | 10h00 | até 10h30 | 10h03 | Envia link ao vivo |
+| Domingo noite (estreia) | 18h59 | 19h00 | até 19h30 | 19h07 | Envia link da estreia. Fallback de gravação **desligado** (ver abaixo) |
+| Quarta-feira | 19h55 | 20h00 | até 20h30 | 20h03 | Envia link ao vivo |
+
+As janelas de culto ao vivo abrem **5 minutos antes** do culto e fecham 30 minutos depois dele.
+A antecedência foi padronizada em 25/08, no lugar da mistura antiga de 1, 6 e 11: como
 tecnicamente ela é indiferente, o valor é escolha de quem opera — foram 7 min (o número
 bíblico da completude) de 25/08 até 18/09/2026, quando o Luiz mudou para 5. O fim da janela e
 o aviso de atraso não se moveram junto: quem encurta a abertura desconta os mesmos minutos de
-`maxTentativas` e de `avisoAposMin`. Em dia de estreia o vídeo costuma já estar publicado
-quando a janela abre, então a abertura é, na prática, a hora em que o link sai no grupo —
-ele chega ~5 min antes do culto, apontando para a contagem regressiva.
+`maxTentativas` e de `avisoAposMin`.
+
+**Domingo à noite abre 1 minuto antes, de propósito.** O culto das 19h hoje é estreia (vídeo
+pré-gravado), e o vídeo costuma já estar publicado quando a janela abre: a abertura é, na
+prática, a hora em que o link sai no grupo. Toda estreia tem uma contagem regressiva de 2 min
+no YouTube, então o link às 18h59 não deixa ninguém parado 5 min diante do cronômetro. Efeito
+colateral aceito: o aviso de atraso conta da abertura (8 min), e cai às 19h07 em vez de 19h03;
+como a estreia normalmente já está publicada, ele quase nunca dispara. Se o culto voltar a ser
+ao vivo, a janela volta para 18h55.
+
+**Fallback de gravação do domingo à noite está desligado.** Na tabela embutida ele é ligado
+(se nenhuma transmissão aparecer, o bot envia a gravação mais recente das últimas 6h). Ele foi
+desligado sem ninguém decidir: até o PR #21, toda edição pelo admin regravava os campos que a
+tela não mostra com os padrões, e mudar o horário da janela para 18h59 zerou o
+`fallbackGravacao` (e trocou `filtroHoras` de 7 para 8, aqui e na quarta, sem efeito prático).
+O #21 impede que se repita; religar é decisão de quem opera, e se faz uma vez à mão no
+`janelas-config.json` (`"fallbackGravacao": true` na chave `domingo-noite`) seguido de
+`sudo systemctl restart culto-bot`.
+
+**Sábado saiu de produção.** O culto das 19h de sábado (em teste, sem aviso de atraso) não
+está no `janelas-config.json`: não é necessário no momento. A entrada continua na tabela
+embutida, então **se o arquivo sumir ou ficar inválido, o bot volta a monitorar o sábado** e o
+domingo à noite volta às 18h55 com fallback. Se o arquivo for recusado, o log de subida traz
+`janelas-config.json inválido (...)`.
 
 **Janela com vigência:** uma entrada de `JANELAS` pode declarar `vigencia: { de, ate }` (datas
 em `YYYY-MM-DD`, no fuso da igreja, as duas inclusas) e `diaSemana` como lista. Fora da
@@ -61,8 +90,9 @@ novo não chegou à VM.
 envia uma mensagem ao grupo avisando que a transmissão atrasou. É enviado no máximo uma vez por
 janela e não interrompe a busca: se o link aparecer depois, ele é enviado normalmente em seguida.
 Se o primeiro envio do aviso falhar, o bot tenta de novo na tentativa seguinte, sem duplicar.
-A janela de sábado não tem aviso (`avisoAposMin: null`): enquanto o culto de sábado for
-experimento, sábado sem transmissão é resultado esperado, não incidente para anunciar no grupo.
+Uma janela pode não ter aviso (`avisoAposMin: null`; na UI, o aviso desligado): é o caso da
+janela de sábado da tabela embutida, porque enquanto o culto de sábado era experimento, sábado
+sem transmissão era resultado esperado, não incidente para anunciar no grupo.
 
 **Memória de janela em disco:** o que cada janela já fez hoje — link enviado, aviso dado,
 gravação do fallback enviada, janela esgotada sem link — fica registrado em
@@ -121,37 +151,12 @@ terminar, o envio espera a **mesma** abertura em vez de abrir um segundo socket.
 > sobrevive à destruição da máquina) e o token `FLY_API_TOKEN` foi apagado do repositório e
 > revogado no Fly. Só a VM envia link, com um único aparelho vinculado.
 
-> **⚠️ Na VM de hoje, o estado do bot mora em `/opt/automacao-culto`, não em `/var/lib/culto`.**
-> Conferido em 06/09/2026: o `/etc/culto/culto.env` tem só `YOUTUBE_API_KEY`,
-> `YOUTUBE_CHANNEL_ID`, `WHATSAPP_GROUP_NAME` e `TZ`. Sem a linha `AUTH_DIR`, o código usa o
-> padrão `.baileys_auth`, relativo ao `WorkingDirectory` do serviço. Resultado: a sessão do
-> WhatsApp (e o histórico de mensagens enviadas) está em `/opt/automacao-culto/.baileys_auth`,
-> a memória de janela em `/opt/automacao-culto/janelas-enviadas.json` e o diagnóstico em
-> `/opt/automacao-culto/diagnostico/`; `/var/lib/culto` está vazio. Todo comando deste README
-> que aponta para `/var/lib/culto` responde "No such file" até a migração abaixo. O bot
-> funciona assim, mas código e dados misturados têm dois riscos: um `git clean` ou um clone
-> novo destrói a sessão (parear de novo pelo QR) e a memória de envios do dia; e o
-> `git status` mostrava os dois arquivos como sujeira a cada deploy — por isso os dois entraram
-> no `.gitignore`.
->
-> **Migração, a fazer fora de horário de culto e depois da semana de 14 a 18/09** (mexe na
-> sessão do WhatsApp da conta; com o serviço parado, é mover três itens e uma linha no env):
->
-> ```bash
-> sudo systemctl stop culto-bot
-> sudo mv /opt/automacao-culto/.baileys_auth /var/lib/culto/baileys_auth
-> sudo mv /opt/automacao-culto/janelas-enviadas.json /var/lib/culto/
-> sudo mv /opt/automacao-culto/diagnostico /var/lib/culto/diagnostico
-> sudo chown -R culto:culto /var/lib/culto
-> echo 'AUTH_DIR=/var/lib/culto/baileys_auth' | sudo tee -a /etc/culto/culto.env
-> sudo systemctl start culto-bot
-> journalctl -u culto-bot -n 20
-> ```
->
-> A conferência é a linha "Credenciais encontradas" no log de subida, sem pedido de QR code, e
-> o `/var/lib/culto/janelas-enviadas.json` ganhando a marca da janela seguinte. Se o log pedir
-> QR, a sessão não foi encontrada: pare o serviço e confira o caminho na linha `AUTH_DIR`.
-> Feita a migração, este aviso pode ser removido.
+> **O estado do bot mora em `/var/lib/culto`.** Até setembro de 2026 ele ficava em
+> `/opt/automacao-culto`, misturado ao código (sem a linha `AUTH_DIR` no env, o padrão
+> `.baileys_auth` era relativo ao `WorkingDirectory`), com o risco de um `git clean` ou clone
+> novo destruir a sessão do WhatsApp e a memória de envios do dia. A migração foi feita e
+> conferida em 28/09/2026: `/etc/culto/culto.env` tem `AUTH_DIR=/var/lib/culto/baileys_auth`,
+> e ao lado dela ficam `janelas-enviadas.json`, `janelas-config.json` e `diagnostico/`.
 
 **Se o processo subir atrasado** — um restart (teto de vida, deploy, reboot da VM) caindo
 depois do **segundo 0** do minuto agendado de uma janela —, o cron daquele dia já passou e
@@ -648,7 +653,7 @@ Culto da Família | 01/06 | 10h
 https://www.youtube.com/watch?v=...
 ```
 
-**Gravação (fallback domingo noite):**
+**Gravação (fallback, hoje desligado em produção; ver "Horários monitorados"):**
 ```
 🎬 Culto disponível para assistir
 
