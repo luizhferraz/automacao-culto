@@ -93,6 +93,17 @@ computador (não o Cloud Shell do navegador — ele é uma máquina remota tamb�
 chega ao seu navegador local sem o Web Preview dele). Precisa do `gcloud` CLI instalado
 localmente uma vez (`brew install --cask google-cloud-sdk` no macOS, depois `gcloud init`).
 
+O `gcloud` atual exige Python 3.10 ou mais novo. O Python que vem com o macOS (3.9) não serve,
+e o sintoma é `ERROR: gcloud failed to load. You are running gcloud with Python 3.9` em
+qualquer comando `gcloud`. Correção, uma vez por computador:
+
+```bash
+brew install python@3.12
+echo 'export CLOUDSDK_PYTHON="$(brew --prefix python@3.12)/bin/python3.12"' >> ~/.zshrc
+```
+
+Feche e abra o terminal e confira com `gcloud --version`.
+
 ```bash
 # se a VM é a mesma do "gcloud compute ssh" do README principal:
 gcloud compute ssh culto-bot --zone=us-east1-b -- -L 127.0.0.1:8080:localhost:8080
@@ -105,6 +116,11 @@ Deixe esse terminal aberto — é ele que sustenta o túnel — e abra `http://l
 navegador. Fechar o terminal (ou `Ctrl+C`) derruba o túnel e a página para de responder até
 abrir de novo.
 
+Esse mesmo terminal já é uma sessão **dentro da VM**: o prompt muda para
+`usuario@culto-bot:~$`. Os comandos `sudo systemctl ...` e `sudo journalctl ...` dos fluxos
+abaixo rodam ali mesmo, sem entrar de novo. Não rode `gcloud compute ssh` com esse prompt: é a
+VM tentando entrar nela mesma, e falha com `Request had insufficient authentication scopes`.
+
 ## Fluxo do dia a dia
 
 Duas rotinas diferentes: editar uma janela (não mexe em código) e atualizar o código deste
@@ -115,10 +131,13 @@ projeto (quando uma mudança for enviada pro repositório).
 1. Abrir o túnel (comando da seção "Acessar" acima) e deixar o terminal aberto.
 2. Abrir `http://localhost:8080`, criar/editar/excluir. O toast de sucesso já confirma que a
    gravação em `janelas-config.json` funcionou.
-3. Se a mudança precisa valer **agora** (não pode esperar o próximo restart natural do bot):
+3. Se a mudança precisa valer **agora** (não pode esperar o próximo restart natural do bot),
+   rode no **mesmo terminal do túnel** (prompt `usuario@culto-bot:~$`):
    ```bash
    sudo systemctl restart culto-bot
    ```
+   O nome do serviço é `culto-bot`, com `t` no final; `Unit ... not found` quase sempre é erro
+   de digitação. O restart derruba e reconecta o bot: evite durante um culto em andamento.
    Sem isso, ainda vale — só que só no fim da janela atual ou no teto de vida de 90 min, o que
    vier primeiro (ver "O bot só lê esse arquivo na subida", acima).
 4. Conferir (opcional, só quando quiser ter certeza — véspera de culto, ou depois de mexer em
